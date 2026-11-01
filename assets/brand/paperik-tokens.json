@@ -1,0 +1,55 @@
+{
+  "name": "Paperik",
+  "status": "design-concept",
+  "colors": {
+    "paper": "#F5F6F0",
+    "surface": "#FFFFFF",
+    "ink": "#182E28",
+    "forest": "#28664F",
+    "sage": "#DFEDE3",
+    "slate": "#637269",
+    "stroke": "#DDE3DA",
+    "fieldBackground": "#E9EFFB",
+    "fieldForeground": "#365B91",
+    "warningBackground": "#F8EAD8",
+    "warningForeground": "#86501B",
+    "errorBackground": "#F7E5E1",
+    "errorForeground": "#9D3D33"
+  },
+  "typography": {
+    "uiFamily": "Segoe UI",
+    "bodyPx": 14,
+    "captionPx": 12,
+    "headingPx": [
+      20,
+      24,
+      28
+    ],
+    "document": "From source document; no automatic style replacement",
+    "logo": "Original vector paths"
+  },
+  "spacingPx": [
+    4,
+    8,
+    12,
+    16,
+    24,
+    32
+  ],
+  "radiusPx": {
+    "control": 6,
+    "panel": 8
+  },
+  "interaction": {
+    "minimumTargetPx": 36,
+    "focusRingPx": 2
+  },
+  "dark": {
+    "background": "#1B2420",
+    "surface": "#242E28",
+    "panel": "#202923",
+    "foreground": "#EDF2EA",
+    "secondary": "#B0BCAF",
+    "stroke": "#3C493F"
+  }
+}

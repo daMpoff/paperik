@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Paperik — брендбук</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:'Segoe UI',Arial,sans-serif;color:#182E28}button{font:inherit;cursor:pointer}button:focus-visible{outline:2px solid #416BAC;outline-offset:3px}.lockup{display:inline-flex;align-items:center;gap:14px}.app{--bg:#F5F6F0;--surface:#FFFFFF;--panel:#F9FAF6;--ink:#182E28;--muted:#637269;--line:#E1E6DF;--selected:#E7EEE6;background:var(--bg);color:var(--ink);height:100%;font-size:13px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line);border-radius:12px}.app.dark{--bg:#1B2420;--surface:#242E28;--panel:#202923;--ink:#EDF2EA;--muted:#B0BCAF;--line:#3C493F;--selected:#35463A}.app svg{vertical-align:middle}.app-top{height:64px;display:flex;align-items:center;padding:0 20px;border-bottom:1px solid var(--line);background:var(--surface);gap:26px;flex:none}.app-brand{display:flex;gap:7px;align-items:center;min-width:195px}.app-brand>b{font-size:22px;letter-spacing:-1px}.app-brand svg{color:var(--ink)!important}.crumb{color:var(--muted);font-size:12px}.crumb>span{margin:0 12px;opacity:.5}.top-actions{margin-left:auto;display:flex;gap:15px;align-items:center}.saved{font-size:11px;color:var(--muted)}.plain{background:none;border:0;color:inherit;display:inline-flex;align-items:center;gap:6px;padding:5px}.primary{background:#28664F;color:white;border:0;border-radius:7px;padding:9px 14px;display:inline-flex;align-items:center;gap:14px;font-size:12px}.app-body{display:flex;min-height:0;flex:1}.files{width:225px;flex:none;background:var(--panel);padding:23px 12px;position:relative;border-right:1px solid var(--line)}.side-title{padding:0 8px;color:var(--muted);font-size:10px;letter-spacing:1.5px;display:flex;justify-content:space-between;align-items:center}.project-name{font-size:13px;font-weight:600;padding:13px 8px 19px}.search{width:100%;display:flex;align-items:center;gap:8px;color:var(--muted);background:var(--surface);border:1px solid var(--line);padding:9px 8px;border-radius:6px;font-size:11px}.search kbd{margin-left:auto;font-family:inherit;font-size:9px}.tree-group{margin:26px 8px 12px;display:flex;align-items:center;gap:9px;font-weight:600;font-size:12px}.tree-group span{margin-left:auto;color:var(--muted);font-weight:400}.tree-row{padding:11px 9px;margin-bottom:3px;display:flex;align-items:center;gap:8px;font-size:11px;white-space:nowrap;border-radius:5px;color:var(--muted)}.tree-row.active{background:var(--selected);color:var(--ink);font-weight:600}.tree-row>span{overflow:hidden;text-overflow:ellipsis}.add-file{border:0;background:transparent;color:var(--muted);font-size:11px;padding:14px 9px;display:flex;align-items:center;gap:8px}.structure-label{font-size:9px;letter-spacing:1.1px;color:var(--muted);margin:29px 8px 13px}.outline{font-size:11px;padding:10px 13px;border-left:1px solid var(--line);margin-left:12px;color:var(--muted)}.outline.selected{border-left:2px solid #28664F;font-weight:600;color:var(--ink)}.local-bottom{position:absolute;bottom:20px;left:20px;display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted)}.workspace{flex:1;min-width:0;display:flex;flex-direction:column}.doc-tabs{height:43px;border-bottom:1px solid var(--line);display:flex;align-items:stretch;gap:8px;padding-left:17px;background:var(--panel)}.doc-tabs>span{padding:0 12px;border-bottom:2px solid #28664F;display:flex;align-items:center;gap:8px;font-size:11px}.tab-close{margin-left:15px;color:var(--muted)}.format-bar{height:45px;display:flex;align-items:center;padding:0 13px;gap:13px;background:var(--surface);font-size:11px;white-space:nowrap;border-bottom:1px solid var(--line)}.format-bar>span{display:flex;gap:8px;align-items:center}.format-bar>i{height:15px;width:1px;background:var(--line)}.format-end{margin-left:auto;font-size:9px;color:var(--muted)}.document-area{flex:1;overflow:hidden;padding:26px 24px 0;display:flex;justify-content:center;background:var(--bg)}.page-shadow{width:532px;max-width:100%;filter:drop-shadow(0 3px 7px #142A1810)}.paper-page{background:#FFFFFF;color:#252A27;min-height:752px;padding:48px 54px;position:relative;font-family:'Times New Roman',serif}.paper-kicker{text-align:center;font-family:'Segoe UI',sans-serif;font-size:8px;letter-spacing:1.6px;color:#66716B}.paper-page h2{text-align:center;font-size:26px;font-weight:400;margin:17px 0 8px}.paper-subtitle{text-align:center;font-size:16px;margin:0!important;text-indent:0!important}.author-block{text-align:right;margin:39px 0 44px;font-size:15px;line-height:2.1}.field-highlight{background:#E9EFFB;border-bottom:1px solid #6A86B5;position:relative;padding:3px 5px}.field-tag{position:absolute;left:0;top:-22px;background:#DFE8F7;color:#365B91;border-radius:3px;font:9px 'Segoe UI',sans-serif;padding:3px 7px;line-height:1}.field-soft{background:#F0F4FA;padding:2px 4px}.paper-page h3{font-size:17px;margin:22px 0 9px}.paper-page p{font-size:15px;line-height:1.6;text-align:justify;text-indent:26px;margin:9px 0}.paper-page p.paper-subtitle{text-align:center}.paper-note{margin-top:28px;border-left:2px solid #9CB9A5;padding-left:14px;color:#58635A;font-size:14px;line-height:1.6;font-style:italic}.page-num{position:absolute;bottom:25px;left:0;width:100%;text-align:center;font-size:12px}.status{height:31px;background:var(--surface);border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;padding:0 18px;font-size:10px;color:var(--muted);flex:none}.status>span{display:flex;align-items:center;gap:12px}.status b{font-weight:400}.status strong{font-weight:400}.zoom-line{width:64px;height:2px;background:#A7B4A9;position:relative}.zoom-line:after{content:'';width:7px;height:7px;border-radius:50%;background:#28664F;position:absolute;left:30px;top:-2px}.assistant{width:289px;flex:none;border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;padding:0 18px}.assistant-tabs{height:50px;display:flex;align-items:center;gap:22px;border-bottom:1px solid var(--line);font-size:12px;flex:none}.assistant-tabs>b{height:100%;display:flex;align-items:center;border-bottom:2px solid #28664F;font-weight:600}.assistant-tabs>span{color:var(--muted);font-size:11px}.assistant-tabs>svg{margin-left:auto}.assistant-tabs small{font-size:9px;padding:2px 5px;background:var(--selected);border-radius:4px}.model{display:flex;align-items:center;gap:9px;margin:18px 0 25px;padding:10px;border:1px solid var(--line);border-radius:7px}.model-dot{width:7px;height:7px;background:#4E8B66;border-radius:50%;flex:none}.model b{display:block;font-size:11px;font-weight:600}.model small{display:block;font-size:10px;color:var(--muted);margin-top:3px}.model>svg{margin-left:auto;color:var(--muted)}.chat{flex:1}.user-bubble{background:var(--panel);padding:13px 14px;font-size:12px;line-height:1.6;border:1px solid var(--line);border-radius:8px;margin-left:20px}.ai-caption{display:flex;align-items:center;gap:7px;margin:25px 0 8px}.ai-caption>b{font-size:11px;font-weight:600}.ai-text{font-size:12px;line-height:1.65;margin:8px 0 16px}.change-card{border:1px solid var(--line);border-radius:7px;padding:12px 11px}.change-card>div:first-child{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--ink)}.change-card>div:first-child svg{color:#28664F}.change-card b{font-weight:600}.change-card>p{font-size:11px;color:var(--muted);display:flex;justify-content:space-between;margin:12px 0}.change-card>p>span{color:var(--ink)}.change-footer{padding-top:10px;border-top:1px solid var(--line);font-size:9px;color:var(--muted)}.version-link{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px;margin-top:12px}.version-link button{margin-left:auto;border:0;background:transparent;color:var(--ink);font-size:10px;text-decoration:underline;text-underline-offset:3px}.secondary{background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;font-size:11px}.review-button{width:100%;margin-top:23px}.composer{border:1px solid #A3B5A6;border-radius:8px;padding:12px;margin-top:20px}.prompt{font-size:11px;color:var(--muted)}.composer-bottom{display:flex;align-items:center;gap:4px;margin-top:24px}.composer-bottom>span{font-size:9px;color:var(--muted)}.send{margin-left:auto;background:#28664F;color:white;border:0;border-radius:5px;width:27px;height:27px}.privacy{font-size:9px;text-align:center;color:var(--muted);padding:12px 0 16px}
+
+body{background:#E7EBE3}.slide{width:1200px;height:750px;background:#F5F6F0;position:relative;padding:53px 60px;overflow:hidden;break-after:page}.slide:last-child{break-after:auto}.section-kicker{font-size:11px;letter-spacing:1.9px;color:#28664F;font-weight:600;margin-bottom:19px}.slide h1{font-size:43px;line-height:1.13;letter-spacing:-1.6px;font-weight:500;margin:0 0 18px}.lead{font-size:15px;line-height:1.6;color:#637269;max-width:770px;margin:0}.slide footer{position:absolute;bottom:26px;left:60px;right:60px;display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#637269;border-top:1px solid #DDE3DA;padding-top:14px}.slide footer span:nth-child(2){margin-left:auto;margin-right:30px}.tiny{font-size:10px;letter-spacing:1.4px;color:#637269;font-family:'Segoe UI',sans-serif}.cover{background:#182E28;color:#F5F6F0;padding-top:43px}.cover-top{display:flex;justify-content:space-between;align-items:center}.cover-top>span{text-align:right;font-size:10px;letter-spacing:1.8px;line-height:1.8;color:#B3C9BA}.cover-main{display:flex;justify-content:space-between;align-items:center;margin-top:83px}.eyebrow{font-size:10px;letter-spacing:2px;color:#A5C2AF;margin-bottom:24px}.cover h1{font-size:71px;line-height:1.04;letter-spacing:-3px;font-weight:400;margin:0 0 26px}.cover h1 em{font-style:normal;color:#AED2BC}.cover p{font-size:16px;line-height:1.65;color:#CFDDD1}.cover-sign{display:flex;align-items:center;flex-direction:column;gap:20px;margin-right:44px}.cover-sign>span{color:#B9CFC1;font-size:12px;line-height:1.6;text-align:center}.cover-bottom{display:flex;justify-content:space-between;position:absolute;bottom:34px;left:60px;right:60px;border-top:1px solid #41584D;padding-top:16px;font-size:10px;color:#A5C2AF}.principles{display:grid;grid-template-columns:repeat(3,1fr);gap:42px;margin-top:52px}.principles>div{border-top:1px solid #CCD8CB;padding-top:16px}.principles>div>span{font-size:11px;color:#28664F}.principles h2{font-size:25px;font-weight:500;margin:21px 0 12px;letter-spacing:-.6px}.principles p{font-size:14px;line-height:1.7;color:#637269;margin:0}.voice-strip{background:#E5EDE3;display:grid;grid-template-columns:130px 1fr;gap:16px;margin-top:41px;padding:19px 22px;align-items:center}.voice-strip b{font-size:12px;font-weight:600}.voice-strip>span{font-size:18px}.voice-strip p{grid-column:2;font-size:12px;margin:0;color:#4D6255;line-height:1.5}.logo-board{display:grid;grid-template-columns:1.65fr 1fr;gap:20px;margin-top:35px;height:265px}.logo-main{border:1px solid #D8E1D5;display:flex;align-items:center;justify-content:center;gap:22px;position:relative}.logo-main>span{position:absolute;bottom:18px;left:20px;font-size:10px;color:#637269}.logo-reverse{background:#182E28;display:flex;align-items:center;justify-content:center;gap:12px;padding:25px}.logo-rules{display:grid;grid-template-columns:1fr 1.35fr 1.1fr;gap:35px;margin-top:27px}.logo-rules b{font-size:13px;font-weight:600}.logo-rules p{font-size:12px;line-height:1.7;color:#637269;margin-top:7px}.palette{display:grid;grid-template-columns:repeat(6,1fr);gap:17px;margin-top:38px}.swatch>div{height:130px}.swatch h3{font-size:16px;font-weight:500;margin:14px 0 5px}.swatch p{font-size:12px;margin:0 0 6px;font-family:Consolas,monospace}.swatch>span{font-size:11px;color:#637269}.semantics{display:grid;grid-template-columns:repeat(4,1fr);gap:17px;margin-top:42px}.semantics>div>span{display:inline-block;padding:8px 10px;font-size:11px;border-radius:4px}.semantics p{font-size:11px;color:#637269;margin:12px 0}.small-note{font-size:11px;line-height:1.7;color:#637269;margin-top:27px;max-width:950px}.type-grid{display:grid;grid-template-columns:1.15fr 1fr;gap:70px;margin-top:34px}.type-display{font-size:43px;line-height:1.13;letter-spacing:-1.4px;margin-top:20px}.type-ui p{font-size:12px;color:#637269;line-height:1.8;margin:23px 0 15px}.type-sample{font-size:18px;line-height:1.7;color:#637269}.type-doc{background:white;padding:32px 36px}.type-doc h2{font:600 25px 'Times New Roman',serif;margin-top:40px}.type-doc>p{font:20px/1.6 'Times New Roman',serif;text-align:justify;text-indent:24px}.type-doc hr{border:0;border-top:1px solid #DDE3DA;margin:27px 0 20px}.type-doc>div{font-size:12px;color:#637269;line-height:1.7}.interface-slide{padding-top:33px}.interface-heading{display:flex;justify-content:space-between;align-items:center}.interface-heading .section-kicker{margin-bottom:9px}.interface-heading h1{font-size:31px;margin-bottom:13px}.interface-heading>p{font-size:12px;color:#637269;line-height:1.6;margin:0}.mini-app{width:1080px;height:510px;overflow:hidden;border-radius:10px}.mini-app>.app{width:1296px;height:612px;transform:scale(.833333);transform-origin:top left}.mini-app .document-area{padding-top:19px}.mini-app .paper-page{padding-top:34px}.mini-app .author-block{margin-top:30px;margin-bottom:24px}.mini-app .model{margin-bottom:16px}.mini-app .user-bubble{font-size:11px}.mini-app .ai-caption{margin-top:17px}.mini-app .review-button{margin-top:13px}.mini-app .composer{margin-top:13px}.mini-app .composer-bottom{margin-top:15px}.mini-app .privacy{padding-bottom:10px}.interface-slide footer{bottom:20px}.component-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px 35px;margin-top:35px}.component-box{border-top:1px solid #CDD8CC;padding-top:17px;min-height:160px}.component-box>p{font-size:12px;line-height:1.65;color:#637269;max-width:470px;margin-top:18px}.button-row{display:flex;align-items:center;gap:13px;margin-top:24px}.field-demo{margin-top:25px;width:320px;position:relative;display:flex;justify-content:space-between;align-items:center;background:#E9EFFB;border:1px solid #6A86B5;padding:13px 15px;border-radius:4px;font:20px 'Times New Roman',serif}.field-label{position:absolute;left:12px;top:-9px;background:#DCE6F8;padding:1px 7px;color:#365B91;font:10px 'Segoe UI',sans-serif}.field-demo svg{color:#365B91}.geometry{display:flex;align-items:baseline;gap:25px;margin-top:27px}.geometry b{font-size:40px;color:#28664F;font-weight:500;line-height:1}.geometry>span{font-size:18px;color:#637269}.focus-demo{margin-top:27px;border:1px solid #CDD8CC;outline:2px solid #416BAC;outline-offset:3px;display:flex;align-items:center;gap:12px;padding:11px 13px;border-radius:5px;width:330px;font-size:12px}.focus-demo kbd{margin-left:auto;font-size:10px;color:#637269}.history-layout{display:grid;grid-template-columns:1.1fr 1fr;gap:48px;margin-top:34px}.history-tree{padding:22px;border:1px solid #DDE3DA;background:#F9FAF6}.history-tree svg{margin-top:14px}.diff-panel{padding:22px;background:white}.diff-heading{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #DDE3DA;padding-bottom:18px}.diff-heading b{font-size:18px;font-weight:500}.diff-heading span{font-size:11px;color:#637269}.diff-entry{margin-top:18px}.diff-entry>span{font-size:11px;color:#637269}.diff-entry p{font-size:16px;padding:7px 10px;margin:6px 0}.removed{color:#8A4B43;background:#F7E5E1;text-decoration:line-through}.added{color:#28664F;background:#DFEDE3}.diff-preserved{display:flex;align-items:center;gap:8px;font-size:11px;margin:20px 0;color:#28664F}.dark-preview{height:265px;overflow:hidden;border-radius:9px;margin-top:24px}.dark-preview>.app{width:1296px;height:620px;transform:scale(.833333);transform-origin:top left}.dark-caption{display:grid;grid-template-columns:repeat(3,1fr);gap:35px;margin-top:22px}.dark-caption b{font-size:12px;font-weight:600}.dark-caption p{font-size:11px;color:#637269;line-height:1.6;margin-top:9px}.dark-slide h1{font-size:37px}.dark-slide .lead{max-width:900px;font-size:13px}.dark-slide .section-kicker{margin-bottom:13px}
+@media screen{.slide{margin:22px auto}}@media print{@page{size:1200px 750px;margin:0}body{background:none}.slide{margin:0;print-color-adjust:exact;-webkit-print-color-adjust:exact}}
+.field-tag{left:auto;right:-43px;top:4px}.chat{min-height:0;overflow:auto}.app.dark .app-brand svg path[fill="#F5F6F0"]{fill:#182E28}.mini-app .files{padding-top:18px}.mini-app .tree-group{margin-top:18px}.mini-app .tree-row{padding:8px 9px}.mini-app .structure-label{margin-top:15px}.mini-app .outline{padding:7px 13px}</style>
+<section class="slide cover">
+<div class="cover-top">
+<span class="lockup">
+<svg width="51" height="51" viewBox="0 0 64 64" style="color:#F5F6F0;flex:none" xmlns="http://www.w3.org/2000/svg" aria-label="Знак Paperik">
+<path d="M15 5H40L59 24V49Q59 59 49 59H15Q5 59 5 49V15Q5 5 15 5Z" fill="currentColor"/>
+<path d="M40 5V17Q40 24 47 24H59Z" fill="#86B59C"/>
+<path fill-rule="evenodd" d="M19 20H31C41 20 46 24 46 32C46 40 40 44 31 44H27V52H19ZM27 27V37H31C36 37 38 35 38 32C38 29 36 27 31 27Z" fill="#182E28"/>
+</svg>
+<svg width="186.15" height="53.9835" viewBox="-2 0 305 88" xmlns="http://www.w3.org/2000/svg" style="color:#F5F6F0" aria-label="paperik">
+<g fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4 29V81M4 44C4 18 38 18 38 44C38 70 4 70 4 44"/>
+<path d="M87 29V60M87 44C87 18 53 18 53 44C53 70 87 70 87 44"/>
+<path d="M106 29V81M106 44C106 18 140 18 140 44C140 70 106 70 106 44"/>
+<path d="M158 44H191C191 19 158 19 158 44C158 66 182 67 191 57"/>
+<path d="M210 60V29M210 42C210 31 218 26 229 28"/>
+<path d="M246 29V60M268 7V60M269 47L291 29M277 40L295 60"/>
+</g>
+<circle cx="246" cy="11" r="4.4" fill="currentColor"/>
+</svg>
+</span>
+<span>БРЕНДБУК<br>НОЯБРЬ 2026</span>
+</div>
+<div class="cover-main">
+<div>
+<div class="eyebrow">РЕДАКТОР ДОКУМЕНТОВ С ИИ</div>
+<h1>Твой текст.<br>
+<em>Точный формат.</em>
+</h1>
+<p>Редактор документов с сохранением<br>оформления и локальным ИИ.</p>
+</div>
+<div class="cover-sign">
+<svg width="300" height="300" viewBox="0 0 64 64" style="color:#F5F6F0;flex:none" xmlns="http://www.w3.org/2000/svg" aria-label="Знак Paperik">
+<path d="M15 5H40L59 24V49Q59 59 49 59H15Q5 59 5 49V15Q5 5 15 5Z" fill="currentColor"/>
+<path d="M40 5V17Q40 24 47 24H59Z" fill="#86B59C"/>
+<path fill-rule="evenodd" d="M19 20H31C41 20 46 24 46 32C46 40 40 44 31 44H27V52H19ZM27 27V37H31C36 37 38 35 38 32C38 29 36 27 31 27Z" fill="#182E28"/>
+</svg>
+<span>Содержание и оформление</span>
+</div>
+</div>
+<div class="cover-bottom">
+<span>Документы · шаблоны · ИИ</span>
+<span>paperik</span>
+</div>
+</section>
+<section class="slide">
+<div class="section-kicker">01 / PAPERIK</div>
+<h1>Принципы</h1>
+<p class="lead">Создание документов по шаблону с сохранением оформления и истории изменений.</p>
+<div class="principles">
+<div>
+<span>01</span>
+<h2>Точность</h2>
+<p>Оформление — часть документа. Видимые поля, понятные изменения и сохранённые параметры.</p>
+</div>
+<div>
+<span>02</span>
+<h2>Спокойствие</h2>
+<p>Документ получает главное место. Панели помогают работать и не спорят за внимание.</p>
+</div>
+<div>
+<span>03</span>
+<h2>Контроль</h2>
+<p>Локальная модель по умолчанию. Каждое действие объяснимо, версии доступны для возврата.</p>
+</div>
+</div>
+<div class="voice-strip">
+<b>Голос бренда</b>
+<span>«Обновлено 2 поля. Создана новая версия»</span>
+<p>Коротко, предметно, без восторженных обещаний. Сообщаем результат и следующий доступный шаг.</p>
+</div>
+<footer>
+<span>Paperik</span>
+<span>Характер</span>
+<span>02 / 09</span>
+</footer>
+</section>
+<section class="slide">
+<div class="section-kicker">02 / PAPERIK</div>
+<h1>Логотип</h1>
+<p class="lead">Лист с загнутым углом и геометрическая P. Мягкий угол уравновешивает строгую структуру.</p>
+<div class="logo-board">
+<div class="logo-main">
+<svg width="150" height="150" viewBox="0 0 64 64" style="color:#182E28;flex:none" xmlns="http://www.w3.org/2000/svg" aria-label="Знак Paperik">
+<path d="M15 5H40L59 24V49Q59 59 49 59H15Q5 59 5 49V15Q5 5 15 5Z" fill="currentColor"/>
+<path d="M40 5V17Q40 24 47 24H59Z" fill="#86B59C"/>
+<path fill-rule="evenodd" d="M19 20H31C41 20 46 24 46 32C46 40 40 44 31 44H27V52H19ZM27 27V37H31C36 37 38 35 38 32C38 29 36 27 31 27Z" fill="#F5F6F0"/>
+</svg>
+<svg width="420" height="121.8" viewBox="-2 0 305 88" xmlns="http://www.w3.org/2000/svg" style="color:#182E28" aria-label="paperik">
+<g fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4 29V81M4 44C4 18 38 18 38 44C38 70 4 70 4 44"/>
+<path d="M87 29V60M87 44C87 18 53 18 53 44C53 70 87 70 87 44"/>
+<path d="M106 29V81M106 44C106 18 140 18 140 44C140 70 106 70 106 44"/>
+<path d="M158 44H191C191 19 158 19 158 44C158 66 182 67 191 57"/>
+<path d="M210 60V29M210 42C210 31 218 26 229 28"/>
+<path d="M246 29V60M268 7V60M269 47L291 29M277 40L295 60"/>
+</g>
+<circle cx="246" cy="11" r="4.4" fill="currentColor"/>
+</svg>
+<span>Основной логотип</span>
+</div>
+<div class="logo-reverse">
+<svg width="85" height="85" viewBox="0 0 64 64" style="color:#F5F6F0;flex:none" xmlns="http://www.w3.org/2000/svg" aria-label="Знак Paperik">
+<path d="M15 5H40L59 24V49Q59 59 49 59H15Q5 59 5 49V15Q5 5 15 5Z M19 20V52H27V44H31C40 44 46 40 46 32C46 24 41 20 31 20Z M27 27H31C36 27 38 29 38 32C38 35 36 37 31 37H27Z" fill="currentColor" fill-rule="evenodd"/>
+</svg>
+<svg width="240" height="69.6" viewBox="-2 0 305 88" xmlns="http://www.w3.org/2000/svg" style="color:#F5F6F0" aria-label="paperik">
+<g fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4 29V81M4 44C4 18 38 18 38 44C38 70 4 70 4 44"/>
+<path d="M87 29V60M87 44C87 18 53 18 53 44C53 70 87 70 87 44"/>
+<path d="M106 29V81M106 44C106 18 140 18 140 44C140 70 106 70 106 44"/>
+<path d="M158 44H191C191 19 158 19 158 44C158 66 182 67 191 57"/>
+<path d="M210 60V29M210 42C210 31 218 26 229 28"/>
+<path d="M246 29V60M268 7V60M269 47L291 29M277 40L295 60"/>
+</g>
+<circle cx="246" cy="11" r="4.4" fill="currentColor"/>
+</svg>
+</div>
+</div>
+<div class="logo-rules">
+<div>
+<b>Охранное поле</b>
+<p>Не менее ¼ высоты знака со всех сторон.</p>
+</div>
+<div>
+<b>Минимальный размер</b>
+<p>Знак: 24 px. Подпись: от 120 px по ширине. Ниже 24 px — монохромный знак и проверка вручную.</p>
+</div>
+<div>
+<b>Правила</b>
+<p>Сохранять пропорции. Использовать исходный SVG. Не добавлять тени, обводку и декоративные эффекты.</p>
+</div>
+</div>
+<footer>
+<span>Paperik</span>
+<span>Логотип</span>
+<span>03 / 09</span>
+</footer>
+</section>
+<section class="slide">
+<div class="section-kicker">03 / PAPERIK</div>
+<h1>Палитра</h1>
+<p class="lead">Нейтральная основа делает документ главным. Зелёный отмечает действие, а не украшает весь экран.</p>
+<div class="palette">
+<div class="swatch">
+<div style="background:#F5F6F0;">
+</div>
+<h3>Paper</h3>
+<p>#F5F6F0</p>
+<span>Фон приложения</span>
+</div>
+<div class="swatch">
+<div style="background:#FFFFFF;border:1px solid #DEE4DB">
+</div>
+<h3>Surface</h3>
+<p>#FFFFFF</p>
+<span>Панели и документ</span>
+</div>
+<div class="swatch">
+<div style="background:#182E28;">
+</div>
+<h3>Ink</h3>
+<p>#182E28</p>
+<span>Основной текст</span>
+</div>
+<div class="swatch">
+<div style="background:#28664F;">
+</div>
+<h3>Forest</h3>
+<p>#28664F</p>
+<span>Основное действие</span>
+</div>
+<div class="swatch">
+<div style="background:#DFEDE3;">
+</div>
+<h3>Sage</h3>
+<p>#DFEDE3</p>
+<span>Тихий акцент</span>
+</div>
+<div class="swatch">
+<div style="background:#637269;">
+</div>
+<h3>Slate</h3>
+<p>#637269</p>
+<span>Вторичный текст</span>
+</div>
+</div>
+<div class="semantics">
+<div>
+<span style="background:#E9EFFB;color:#365B91">Заменяемое поле</span>
+<p>Синий · рамка и название поля</p>
+</div>
+<div>
+<span style="background:#DFEDE3;color:#28664F">Изменения сохранены</span>
+<p>Зелёный · галочка и текст</p>
+</div>
+<div>
+<span style="background:#F8EAD8;color:#86501B">Требуется проверка</span>
+<p>Янтарный · пояснение причины</p>
+</div>
+<div>
+<span style="background:#F7E5E1;color:#9D3D33">Не удалось сохранить</span>
+<p>Красный · действие восстановления</p>
+</div>
+</div>
+<div class="small-note">Состояния различаются не только цветом: текстом, значком и границей. Поля внутри документа — служебный слой, который не попадает в экспорт.</div>
+<footer>
+<span>Paperik</span>
+<span>Палитра</span>
+<span>04 / 09</span>
+</footer>
+</section>
+<section class="slide">
+<div class="section-kicker">04 / PAPERIK</div>
+<h1>Типографика</h1>
+<div class="type-grid">
+<div class="type-ui">
+<span class="tiny">ИНТЕРФЕЙС · SEGOE UI</span>
+<div class="type-display">Segoe UI</div>
+<p>Заголовки: 20–28 px, Semibold.<br>Основной текст: 14 px, Regular.<br>Подписи: 12 px. Базовая линия интерфейса: 4 px.</p>
+<div class="type-sample">Аа Бб Вв Гг Дд Её Жж<br>0123456789 · 14 пт · 1,5</div>
+</div>
+<div class="type-doc">
+<span class="tiny">ДОКУМЕНТ · ШРИФТ ИЗ ФАЙЛА</span>
+<h2>Цель работы</h2>
+<p>Изучить основные возможности облачных сервисов и способы совместной работы с документами.</p>
+<hr>
+<div>Times New Roman, 14 пт и интервал 1,5 — пример параметров шаблона. Интерфейс не подменяет стили документа своей типографикой.</div>
+</div>
+</div>
+<div class="small-note">Логотип использует собственные векторные контуры. Шрифты в комплект не включены. Физические единицы документа и экранные размеры интерфейса хранятся раздельно.</div>
+<footer>
+<span>Paperik</span>
+<span>Типографика</span>
+<span>05 / 09</span>
+</footer>
+</section>
+<section class="slide interface-slide">
+<div class="interface-heading">
+<div>
+<div class="section-kicker">05 / PAPERIK</div>
+<h1>Документ в центре.</h1>
+</div>
+<p>Файлы слева. Помощник справа.<br>Оформление и версия всегда видны.</p>
+</div>
+<div class="mini-app">
+<div class="app ">
+ <div class="app-top">
+<div class="app-brand">
+<svg width="31" height="31" viewBox="0 0 64 64" style="color:#182E28;flex:none" xmlns="http://www.w3.org/2000/svg" aria-label="Знак Paperik">
+<path d="M15 5H40L59 24V49Q59 59 49 59H15Q5 59 5 49V15Q5 5 15 5Z" fill="currentColor"/>
+<path d="M40 5V17Q40 24 47 24H59Z" fill="#86B59C"/>
+<path fill-rule="evenodd" d="M19 20H31C41 20 46 24 46 32C46 40 40 44 31 44H27V52H19ZM27 27V37H31C36 37 38 35 38 32C38 29 36 27 31 27Z" fill="#F5F6F0"/>
+</svg>
+<svg width="105" height="30.45" viewBox="-2 0 305 88" xmlns="http://www.w3.org/2000/svg" style="color:#182E28" aria-label="paperik">
+<g fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4 29V81M4 44C4 18 38 18 38 44C38 70 4 70 4 44"/>
+<path d="M87 29V60M87 44C87 18 53 18 53 44C53 70 87 70 87 44"/>
+<path d="M106 29V81M106 44C106 18 140 18 140 44C140 70 106 70 106 44"/>
+<path d="M158 44H191C191 19 158 19 158 44C158 66 182 67 191 57"/>
+<path d="M210 60V29M210 42C210 31 218 26 229 28"/>
+<path d="M246 29V60M268 7V60M269 47L291 29M277 40L295 60"/>
+</g>
+<circle cx="246" cy="11" r="4.4" fill="currentColor"/>
+</svg>
+</div>
+<span class="crumb">Мои проекты <span>/</span> Учёба</span>
+<div class="top-actions">
+<span class="saved">● Сохранено</span>
+<button class="plain" title="История версий">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="12" cy="12" r="9"/>
+<path d="M12 7v6l4 2"/>
+</svg> История</button>
+<button class="primary">Экспорт <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m6 9 6 6 6-6"/>
+</svg>
+</button>
+<button class="plain theme-toggle" title="Переключить тему" aria-label="Переключить тему">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="12" cy="12" r="4"/>
+<path d="M12 1v3M12 20v3M1 12h3M20 12h3M4 4l2 2M18 18l2 2M4 20l2-2M18 6l2-2"/>
+</svg>
+</button>
+</div>
+</div>
+ <div class="app-body">
+<aside class="files">
+<div class="side-title">ПРОЕКТ <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="5" cy="12" r="1"/>
+<circle cx="12" cy="12" r="1"/>
+<circle cx="19" cy="12" r="1"/>
+</svg>
+</div>
+<div class="project-name">Отчёты и лабораторные</div>
+<button class="search">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="10" cy="10" r="6"/>
+<path d="m15 15 5 5"/>
+</svg> Найти в проекте <kbd>Ctrl K</kbd>
+</button>
+<div class="tree-group">
+<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M3 6h6l2 2h10v11H3z"/>
+</svg> Документы <span>3</span>
+</div>
+<div class="tree-row active">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/>
+</svg>
+<span>Лабораторная №1.docx</span>
+</div>
+<div class="tree-row">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/>
+</svg>
+<span>Шаблон кафедры.docx</span>
+</div>
+<div class="tree-row">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/>
+</svg>
+<span>Методические указания.pdf</span>
+</div>
+<button class="add-file">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M12 4v16M4 12h16"/>
+</svg> Добавить файл</button>
+<div class="structure-label">СТРУКТУРА ДОКУМЕНТА</div>
+<div class="outline selected">Титульный лист</div>
+<div class="outline">1. Цель работы</div>
+<div class="outline">2. Ход работы</div>
+<div class="outline">3. Выводы</div>
+<div class="local-bottom">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<rect x="5" y="10" width="14" height="11" rx="2"/>
+<path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+</svg> Файлы на этом компьютере</div>
+</aside>
+ <section class="workspace">
+<div class="doc-tabs">
+<span>
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/>
+</svg> Лабораторная №1.docx <span class="tab-close">×</span>
+</span>
+<button class="plain">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M12 4v16M4 12h16"/>
+</svg>
+</button>
+</div>
+<div class="format-bar">
+<button class="plain">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m8 4-5 5 5 5M3 9h11a6 6 0 0 1 0 12"/>
+</svg>
+</button>
+<i>
+</i>
+<span>Обычный <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m6 9 6 6 6-6"/>
+</svg>
+</span>
+<i>
+</i>
+<span>Times New Roman <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m6 9 6 6 6-6"/>
+</svg>
+</span>
+<i>
+</i>
+<span>14 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m6 9 6 6 6-6"/>
+</svg>
+</span>
+<b>Ж</b>
+<em>К</em>
+<u>Ч</u>
+<i>
+</i>
+<span>≡</span>
+<span>↕ 1,5</span>
+<span class="format-end">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<rect x="5" y="10" width="14" height="11" rx="2"/>
+<path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+</svg> Оформление сохранено</span>
+</div>
+<div class="document-area">
+<div class="page-shadow">
+<article class="paper-page">
+<div class="paper-kicker">ОТЧЁТ ПО ЛАБОРАТОРНОЙ РАБОТЕ</div>
+<h2>Облачные технологии</h2>
+<p class="paper-subtitle">Лабораторная работа №1</p>
+<div class="author-block">
+<div>Выполнил студент</div>
+<div>
+<span class="field-highlight">Иванов И. И.<span class="field-tag">Автор</span>
+</span>
+</div>
+<div>Группа <span class="field-soft">ИВТ-23</span>
+</div>
+</div>
+<h3>1. Цель работы</h3>
+<p>Изучить основные возможности облачных сервисов, сравнить способы хранения данных и определить подходящие инструменты для совместной работы.</p>
+<h3>2. Ход работы</h3>
+<p>В ходе работы были рассмотрены облачные хранилища и особенности доступа к файлам. Для каждого сервиса определены основные характеристики.</p>
+<div class="page-num">1</div>
+</article>
+</div>
+</div>
+<div class="status">
+<span>Страница 1 из 9 <b>·</b> Русский</span>
+<span>− <span class="zoom-line">
+</span> + <strong>100%</strong>
+</span>
+</div>
+</section>
+ <aside class="assistant">
+<div class="assistant-tabs">
+<b>Помощник</b>
+<span>Поля <small>6</small>
+</span>
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="5" cy="12" r="1"/>
+<circle cx="12" cy="12" r="1"/>
+<circle cx="19" cy="12" r="1"/>
+</svg>
+</div>
+<div class="model">
+<span class="model-dot">
+</span>
+<div>
+<b>Локальная модель</b>
+<small>Ollama · qwen3.5:9b</small>
+</div>
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m6 9 6 6 6-6"/>
+</svg>
+</div>
+<div class="chat">
+<div class="user-bubble">Замени автора и группу на мои данные. Оформление сохрани.</div>
+<div class="ai-caption">
+<svg width="22" height="22" viewBox="0 0 64 64" style="color:#182E28;flex:none" xmlns="http://www.w3.org/2000/svg" aria-label="Знак Paperik">
+<path d="M15 5H40L59 24V49Q59 59 49 59H15Q5 59 5 49V15Q5 5 15 5Z" fill="currentColor"/>
+<path d="M40 5V17Q40 24 47 24H59Z" fill="#86B59C"/>
+<path fill-rule="evenodd" d="M19 20H31C41 20 46 24 46 32C46 40 40 44 31 44H27V52H19ZM27 27V37H31C36 37 38 35 38 32C38 29 36 27 31 27Z" fill="#F5F6F0"/>
+</svg> <b>Paperik</b>
+</div>
+<p class="ai-text">Готово. Данные заменены, параметры оформления сохранены.</p>
+<div class="change-card">
+<div>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m5 12 4 4L19 6"/>
+</svg>
+<b>Обновлено 2 поля</b>
+</div>
+<p>Автор <span>Иванов И. И.</span>
+</p>
+<p>Группа <span>ИВТ-23</span>
+</p>
+<div class="change-footer">Times New Roman · 14 пт · 1,5</div>
+</div>
+<div class="version-link">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="12" cy="12" r="9"/>
+<path d="M12 7v6l4 2"/>
+</svg> Создана версия 03 <button>Сравнить</button>
+</div>
+<button class="secondary review-button">Показать изменения <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m9 5 7 7-7 7"/>
+</svg>
+</button>
+</div>
+<div class="composer">
+<div class="prompt">Что изменить в документе?</div>
+<div class="composer-bottom">
+<button class="plain" title="Прикрепить материал">
+<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M12 4v16M4 12h16"/>
+</svg>
+</button>
+<span>Текущий документ</span>
+<button class="send" title="Отправить">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m4 10 16-6-6 16-3-7zM11 13l9-9"/>
+</svg>
+</button>
+</div>
+</div>
+<div class="privacy">Обработка локально через Ollama</div>
+</aside>
+</div>
+</div>
+</div>
+<footer>
+<span>Paperik</span>
+<span>Интерфейс</span>
+<span>06 / 09</span>
+</footer>
+</section>
+<section class="slide">
+<div class="section-kicker">06 / PAPERIK</div>
+<h1>Компоненты</h1>
+<p class="lead">Одна понятная основная кнопка, тихие вторичные действия и проверяемый результат работы ИИ.</p>
+<div class="component-grid">
+<div class="component-box">
+<span class="tiny">ДЕЙСТВИЯ</span>
+<div class="button-row">
+<button class="primary">Сохранить версию</button>
+<button class="secondary">Сравнить</button>
+<button class="plain">Отменить</button>
+</div>
+<p>Основное действие — Forest. Вторичное — контур. Разрушительные действия требуют явного названия и возможности восстановления.</p>
+</div>
+<div class="component-box">
+<span class="tiny">ПОЛЕ ШАБЛОНА</span>
+<div class="field-demo">
+<span class="field-label">Автор</span>
+<span>Иванов И. И.</span>
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m5 12 4 4L19 6"/>
+</svg>
+</div>
+<p>У поля есть название, привязка к документу и результат замены. Можно исправить ошибочное распознавание.</p>
+</div>
+<div class="component-box">
+<span class="tiny">ГЕОМЕТРИЯ</span>
+<div class="geometry">
+<b>4</b>
+<span>8</span>
+<span>12</span>
+<span>16</span>
+<span>24</span>
+<span>32</span>
+</div>
+<p>Сетка 4 px. Радиус элементов 6–8 px. Разделитель 1 px. Зоны нажатия 36–40 px, даже если значок меньше.</p>
+</div>
+<div class="component-box">
+<span class="tiny">ДОСТУПНОСТЬ</span>
+<div class="focus-demo">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="10" cy="10" r="6"/>
+<path d="m15 15 5 5"/>
+</svg> Найти в документе <kbd>Ctrl F</kbd>
+</div>
+<p>Видимый фокус, управление клавиатурой и масштабирование. Основной текст Ink на Paper имеет контраст выше 12:1.</p>
+</div>
+</div>
+<footer>
+<span>Paperik</span>
+<span>Компоненты</span>
+<span>07 / 09</span>
+</footer>
+</section>
+<section class="slide">
+<div class="section-kicker">07 / PAPERIK</div>
+<h1>История версий</h1>
+<p class="lead">Дерево показывает происхождение вариантов. Сравнение объясняет, что именно изменилось.</p>
+<div class="history-layout">
+<div class="history-tree">
+<span class="tiny">ВЕРСИИ ДОКУМЕНТА</span>
+<svg width="100%" height="315" viewBox="0 0 400 315">
+<g stroke="#B9C9BD" stroke-width="2" fill="none">
+<path d="M36 42V263M36 106C36 141 108 141 108 177V238"/>
+</g>
+<g fill="#FFFFFF" stroke="#28664F" stroke-width="2">
+<circle cx="36" cy="42" r="6"/>
+<circle cx="36" cy="106" r="6"/>
+<circle cx="108" cy="177" r="6"/>
+<circle cx="108" cy="238" r="6"/>
+</g>
+<circle cx="36" cy="263" r="7" fill="#28664F"/>
+<g fill="#182E28" font-family="Segoe UI, sans-serif" font-size="14">
+<text x="56" y="47">01 · Исходный шаблон</text>
+<text x="56" y="111">02 · Заменены данные</text>
+<text x="128" y="182">Альтернативное введение</text>
+<text x="128" y="243">Уточнена цель работы</text>
+<text x="56" y="268" font-weight="600">03 · Текущая версия</text>
+</g>
+</svg>
+</div>
+<div class="diff-panel">
+<div class="diff-heading">
+<b>02 → 03</b>
+<span>Изменено 2 поля</span>
+</div>
+<div class="diff-entry">
+<span>Автор</span>
+<p class="removed">Петров П. П.</p>
+<p class="added">Иванов И. И.</p>
+</div>
+<div class="diff-entry">
+<span>Группа</span>
+<p class="removed">ИВТ-22</p>
+<p class="added">ИВТ-23</p>
+</div>
+<div class="diff-preserved">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m5 12 4 4L19 6"/>
+</svg> Оформление сохранено</div>
+<button class="secondary">Открыть эту версию</button>
+</div>
+</div>
+<footer>
+<span>Paperik</span>
+<span>Версии</span>
+<span>08 / 09</span>
+</footer>
+</section>
+<section class="slide dark-slide">
+<div class="section-kicker">08 / PAPERIK</div>
+<h1>Тёмная тема</h1>
+<p class="lead">Тёмная тема меняет рабочую среду. Страница сохраняет вид бумаги и фактические цвета документа.</p>
+<div class="dark-preview">
+<div class="app dark">
+ <div class="app-top">
+<div class="app-brand">
+<svg width="31" height="31" viewBox="0 0 64 64" style="color:#182E28;flex:none" xmlns="http://www.w3.org/2000/svg" aria-label="Знак Paperik">
+<path d="M15 5H40L59 24V49Q59 59 49 59H15Q5 59 5 49V15Q5 5 15 5Z" fill="currentColor"/>
+<path d="M40 5V17Q40 24 47 24H59Z" fill="#86B59C"/>
+<path fill-rule="evenodd" d="M19 20H31C41 20 46 24 46 32C46 40 40 44 31 44H27V52H19ZM27 27V37H31C36 37 38 35 38 32C38 29 36 27 31 27Z" fill="#F5F6F0"/>
+</svg>
+<svg width="105" height="30.45" viewBox="-2 0 305 88" xmlns="http://www.w3.org/2000/svg" style="color:#182E28" aria-label="paperik">
+<g fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4 29V81M4 44C4 18 38 18 38 44C38 70 4 70 4 44"/>
+<path d="M87 29V60M87 44C87 18 53 18 53 44C53 70 87 70 87 44"/>
+<path d="M106 29V81M106 44C106 18 140 18 140 44C140 70 106 70 106 44"/>
+<path d="M158 44H191C191 19 158 19 158 44C158 66 182 67 191 57"/>
+<path d="M210 60V29M210 42C210 31 218 26 229 28"/>
+<path d="M246 29V60M268 7V60M269 47L291 29M277 40L295 60"/>
+</g>
+<circle cx="246" cy="11" r="4.4" fill="currentColor"/>
+</svg>
+</div>
+<span class="crumb">Мои проекты <span>/</span> Учёба</span>
+<div class="top-actions">
+<span class="saved">● Сохранено</span>
+<button class="plain" title="История версий">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="12" cy="12" r="9"/>
+<path d="M12 7v6l4 2"/>
+</svg> История</button>
+<button class="primary">Экспорт <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m6 9 6 6 6-6"/>
+</svg>
+</button>
+<button class="plain theme-toggle" title="Переключить тему" aria-label="Переключить тему">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="12" cy="12" r="4"/>
+<path d="M12 1v3M12 20v3M1 12h3M20 12h3M4 4l2 2M18 18l2 2M4 20l2-2M18 6l2-2"/>
+</svg>
+</button>
+</div>
+</div>
+ <div class="app-body">
+<aside class="files">
+<div class="side-title">ПРОЕКТ <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="5" cy="12" r="1"/>
+<circle cx="12" cy="12" r="1"/>
+<circle cx="19" cy="12" r="1"/>
+</svg>
+</div>
+<div class="project-name">Отчёты и лабораторные</div>
+<button class="search">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="10" cy="10" r="6"/>
+<path d="m15 15 5 5"/>
+</svg> Найти в проекте <kbd>Ctrl K</kbd>
+</button>
+<div class="tree-group">
+<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M3 6h6l2 2h10v11H3z"/>
+</svg> Документы <span>3</span>
+</div>
+<div class="tree-row active">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/>
+</svg>
+<span>Лабораторная №1.docx</span>
+</div>
+<div class="tree-row">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/>
+</svg>
+<span>Шаблон кафедры.docx</span>
+</div>
+<div class="tree-row">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/>
+</svg>
+<span>Методические указания.pdf</span>
+</div>
+<button class="add-file">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M12 4v16M4 12h16"/>
+</svg> Добавить файл</button>
+<div class="structure-label">СТРУКТУРА ДОКУМЕНТА</div>
+<div class="outline selected">Титульный лист</div>
+<div class="outline">1. Цель работы</div>
+<div class="outline">2. Ход работы</div>
+<div class="outline">3. Выводы</div>
+<div class="local-bottom">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<rect x="5" y="10" width="14" height="11" rx="2"/>
+<path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+</svg> Файлы на этом компьютере</div>
+</aside>
+ <section class="workspace">
+<div class="doc-tabs">
+<span>
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/>
+</svg> Лабораторная №1.docx <span class="tab-close">×</span>
+</span>
+<button class="plain">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M12 4v16M4 12h16"/>
+</svg>
+</button>
+</div>
+<div class="format-bar">
+<button class="plain">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m8 4-5 5 5 5M3 9h11a6 6 0 0 1 0 12"/>
+</svg>
+</button>
+<i>
+</i>
+<span>Обычный <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m6 9 6 6 6-6"/>
+</svg>
+</span>
+<i>
+</i>
+<span>Times New Roman <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m6 9 6 6 6-6"/>
+</svg>
+</span>
+<i>
+</i>
+<span>14 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m6 9 6 6 6-6"/>
+</svg>
+</span>
+<b>Ж</b>
+<em>К</em>
+<u>Ч</u>
+<i>
+</i>
+<span>≡</span>
+<span>↕ 1,5</span>
+<span class="format-end">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<rect x="5" y="10" width="14" height="11" rx="2"/>
+<path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+</svg> Оформление сохранено</span>
+</div>
+<div class="document-area">
+<div class="page-shadow">
+<article class="paper-page">
+<div class="paper-kicker">ОТЧЁТ ПО ЛАБОРАТОРНОЙ РАБОТЕ</div>
+<h2>Облачные технологии</h2>
+<p class="paper-subtitle">Лабораторная работа №1</p>
+<div class="author-block">
+<div>Выполнил студент</div>
+<div>
+<span class="field-highlight">Иванов И. И.<span class="field-tag">Автор</span>
+</span>
+</div>
+<div>Группа <span class="field-soft">ИВТ-23</span>
+</div>
+</div>
+<h3>1. Цель работы</h3>
+<p>Изучить основные возможности облачных сервисов, сравнить способы хранения данных и определить подходящие инструменты для совместной работы.</p>
+<h3>2. Ход работы</h3>
+<p>В ходе работы были рассмотрены облачные хранилища и особенности доступа к файлам. Для каждого сервиса определены основные характеристики.</p>
+<div class="page-num">1</div>
+</article>
+</div>
+</div>
+<div class="status">
+<span>Страница 1 из 9 <b>·</b> Русский</span>
+<span>− <span class="zoom-line">
+</span> + <strong>100%</strong>
+</span>
+</div>
+</section>
+ <aside class="assistant">
+<div class="assistant-tabs">
+<b>Помощник</b>
+<span>Поля <small>6</small>
+</span>
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="5" cy="12" r="1"/>
+<circle cx="12" cy="12" r="1"/>
+<circle cx="19" cy="12" r="1"/>
+</svg>
+</div>
+<div class="model">
+<span class="model-dot">
+</span>
+<div>
+<b>Локальная модель</b>
+<small>Ollama · qwen3.5:9b</small>
+</div>
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m6 9 6 6 6-6"/>
+</svg>
+</div>
+<div class="chat">
+<div class="user-bubble">Замени автора и группу на мои данные. Оформление сохрани.</div>
+<div class="ai-caption">
+<svg width="22" height="22" viewBox="0 0 64 64" style="color:#182E28;flex:none" xmlns="http://www.w3.org/2000/svg" aria-label="Знак Paperik">
+<path d="M15 5H40L59 24V49Q59 59 49 59H15Q5 59 5 49V15Q5 5 15 5Z" fill="currentColor"/>
+<path d="M40 5V17Q40 24 47 24H59Z" fill="#86B59C"/>
+<path fill-rule="evenodd" d="M19 20H31C41 20 46 24 46 32C46 40 40 44 31 44H27V52H19ZM27 27V37H31C36 37 38 35 38 32C38 29 36 27 31 27Z" fill="#F5F6F0"/>
+</svg> <b>Paperik</b>
+</div>
+<p class="ai-text">Готово. Данные заменены, параметры оформления сохранены.</p>
+<div class="change-card">
+<div>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m5 12 4 4L19 6"/>
+</svg>
+<b>Обновлено 2 поля</b>
+</div>
+<p>Автор <span>Иванов И. И.</span>
+</p>
+<p>Группа <span>ИВТ-23</span>
+</p>
+<div class="change-footer">Times New Roman · 14 пт · 1,5</div>
+</div>
+<div class="version-link">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="12" cy="12" r="9"/>
+<path d="M12 7v6l4 2"/>
+</svg> Создана версия 03 <button>Сравнить</button>
+</div>
+<button class="secondary review-button">Показать изменения <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m9 5 7 7-7 7"/>
+</svg>
+</button>
+</div>
+<div class="composer">
+<div class="prompt">Что изменить в документе?</div>
+<div class="composer-bottom">
+<button class="plain" title="Прикрепить материал">
+<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M12 4v16M4 12h16"/>
+</svg>
+</button>
+<span>Текущий документ</span>
+<button class="send" title="Отправить">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="m4 10 16-6-6 16-3-7zM11 13l9-9"/>
+</svg>
+</button>
+</div>
+</div>
+<div class="privacy">Обработка локально через Ollama</div>
+</aside>
+</div>
+</div>
+</div>
+<div class="dark-caption">
+<div>
+<b>Ритм и масштаб</b>
+<p>Цвета панелей меняются; расстояния, состояния и расположение инструментов остаются привычными.</p>
+</div>
+<div>
+<b>Комплект исходников</b>
+<p>Основной логотип, знак, монохромная и инверсная версии, SVG-леттеринг, макет интерфейса и цветовые токены.</p>
+</div>
+<div>
+<b>Применение</b>
+<p>Референс интерфейса. Доступность проверяется при реализации.</p>
+</div>
+</div>
+<footer>
+<span>Paperik</span>
+<span>Тёмная тема и применение</span>
+<span>09 / 09</span>
+</footer>
+</section>
+</html>

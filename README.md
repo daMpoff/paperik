@@ -36,6 +36,7 @@ pwsh -NoProfile -File scripts/build.ps1 -Configuration Release -Check -Package
 - [Backlog](BACKLOG.md).
 - [Навигация по документации](docs/README.md).
 - [Требования к продукту](docs/product.md).
+- [Брендбук и правила интерфейса](docs/brand/README.md).
 - [Архитектура](docs/architecture.md).
 - [Этапы разработки](docs/roadmap.md).
 - [Проверки качества и производительности](docs/testing.md).
