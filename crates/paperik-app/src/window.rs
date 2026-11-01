@@ -568,6 +568,11 @@ unsafe fn request_action(window: HWND, action: Action) {
 
 unsafe fn poll_background(window: HWND) {
     unsafe {
+        // Native file dialogs and MessageBox pump timers while disabling their owner.
+        // Do not execute a deferred action or replace a model inside that modal loop.
+        if IsWindowEnabled(window) == 0 {
+            return;
+        }
         let pointer = state_pointer(window);
         if pointer.is_null() {
             return;
@@ -1668,6 +1673,15 @@ mod tests {
                 .unwrap();
             state.kind = Some(Kind::Load);
             let (closed, pending) = std::sync::mpsc::channel();
+            // A modal native dialog disables the owner while pumping timer callbacks.
+            state.after = Some(Action::Close);
+            EnableWindow(handle, 0);
+            poll_background(handle);
+            assert!(matches!(state.after, Some(Action::Close)));
+            assert!(!state.closing);
+            assert_ne!(IsWindow(handle), 0);
+            EnableWindow(handle, 1);
+            state.after = None;
             state.retired.push(pending);
             procedure(handle, WM_CLOSE, 0, 0);
             assert!(state.closing);
