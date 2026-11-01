@@ -4,6 +4,8 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Direct2D::{ID2D1RenderTarget, ID2D1SolidColorBrush};
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::{HSTRING, Interface, Result, w};
+mod input;
+pub use input::Caret;
 
 #[derive(Clone)]
 pub struct Line {
@@ -398,6 +400,10 @@ fn prepare(
         .chain(paragraph.runs.iter().flat_map(|r| r.text.encode_utf16()))
         .collect();
     if text.is_empty() {
+        text.push(32)
+    } else if matches!(text.last(), Some(10 | 13)) {
+        // A final soft break owns a visible empty line and a caret position.
+        // The virtual space is never part of the document or exported text.
         text.push(32)
     }
     let width = (width - paragraph.style.left - paragraph.style.right).max(1.0);
@@ -882,6 +888,7 @@ mod tests {
             },
             style_id: String::new(),
             list_label: None,
+            list: None,
             page_field: false,
         }
     }
@@ -1033,5 +1040,143 @@ mod tests {
             .report(&doc)
             .unwrap();
         assert_eq!(before, after);
+    }
+    #[test]
+    fn caret_hit_testing_and_highlight_follow_native_shaping() {
+        use paperik_document::editor::{Position, Selection, utf16_len};
+        let (factory, target) = context();
+        let mut doc = Document::from_bytes(
+            include_bytes!("../../../tests/fixtures/formatting.docx").to_vec(),
+        )
+        .unwrap();
+        doc.paragraphs = vec![paragraph("abc Я🚀z"), paragraph("")];
+        doc.footer.clear();
+        let layout = build(&factory, &target, &doc).unwrap();
+        for offset in [0, 1, 2, 3, 4, 5, 7, 8] {
+            let position = Position {
+                paragraph: 0,
+                offset,
+            };
+            let caret = layout.caret(&doc, position, false).unwrap().unwrap();
+            let (hit, _) = layout
+                .hit_test(
+                    &doc,
+                    caret.page,
+                    caret.x + 0.01,
+                    caret.y + caret.height / 2.0,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(position, hit, "offset {offset}");
+        }
+        let empty = Position {
+            paragraph: 1,
+            offset: 0,
+        };
+        let caret = layout.caret(&doc, empty, false).unwrap().unwrap();
+        assert_eq!(
+            layout
+                .hit_test(&doc, caret.page, caret.x + 500.0, caret.y + 1.0)
+                .unwrap()
+                .unwrap()
+                .0,
+            empty
+        );
+        let selection = Selection {
+            anchor: Position {
+                paragraph: 0,
+                offset: 4,
+            },
+            focus: Position {
+                paragraph: 0,
+                offset: utf16_len("abc Я🚀z"),
+            },
+        };
+        let highlights = layout.highlights(&doc, 0, selection).unwrap();
+        assert!(!highlights.is_empty());
+        assert!(highlights.iter().all(|r| r.width > 0.0 && r.height > 0.0));
+    }
+    #[test]
+    fn soft_break_and_wrapped_line_have_distinct_caret_positions() {
+        use paperik_document::editor::{Position, utf16_len};
+        let (factory, target) = context();
+        let mut doc = Document::from_bytes(
+            include_bytes!("../../../tests/fixtures/formatting.docx").to_vec(),
+        )
+        .unwrap();
+        for alignment in [Alignment::Left, Alignment::Justify] {
+            let mut p = paragraph("word word word word word word\n");
+            p.style.alignment = alignment;
+            doc.paragraphs = vec![p];
+            doc.footer.clear();
+            doc.page.width = 350.0;
+            doc.page.left = 96.0;
+            doc.page.right = 96.0;
+            let layout = build(&factory, &target, &doc).unwrap();
+            let lines = &layout.pages[0].lines;
+            assert!(lines.len() >= 3);
+            let boundary = Position {
+                paragraph: 0,
+                offset: lines[1].text_start,
+            };
+            let up = layout.caret(&doc, boundary, true).unwrap().unwrap();
+            let down = layout.caret(&doc, boundary, false).unwrap().unwrap();
+            assert!(up.y < down.y);
+            let end = Position {
+                paragraph: 0,
+                offset: utf16_len(&doc.paragraphs[0].text()),
+            };
+            let caret = layout.caret(&doc, end, false).unwrap().unwrap();
+            assert_eq!(caret.line, lines.len() - 1);
+            assert_eq!(
+                layout
+                    .hit_test(&doc, 0, caret.x, caret.y + 1.0)
+                    .unwrap()
+                    .unwrap()
+                    .0,
+                end
+            );
+        }
+    }
+    #[test]
+    fn editing_grows_pages_and_undo_restores_identical_geometry() {
+        use paperik_document::editor::{Edit, Editor};
+        let (factory, target) = context();
+        let doc = Document::from_bytes(
+            include_bytes!("../../../tests/fixtures/formatting.docx").to_vec(),
+        )
+        .unwrap();
+        let original = build(&factory, &target, &doc).unwrap();
+        let before = original.report(&doc).unwrap();
+        let fonts: Vec<_> = doc
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.runs.iter().map(|r| r.font.clone()))
+            .collect();
+        let mut editor = Editor::new(doc);
+        editor.set_position(editor.end(), false);
+        let change = editor
+            .prepare(Edit::Insert(
+                "\nAdditional paragraph for pagination.".repeat(100),
+            ))
+            .unwrap()
+            .unwrap();
+        let grown = build(&factory, &target, &change.document).unwrap();
+        assert!(grown.pages.len() > original.pages.len());
+        editor.commit(change).unwrap();
+        let change = editor.prepare(Edit::Undo).unwrap().unwrap();
+        let restored = build(&factory, &target, &change.document).unwrap();
+        editor.commit(change).unwrap();
+        assert_eq!(before, restored.report(editor.document()).unwrap());
+        assert_eq!(
+            fonts,
+            editor
+                .document()
+                .paragraphs
+                .iter()
+                .flat_map(|p| p.runs.iter().map(|r| r.font.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(!editor.dirty());
     }
 }

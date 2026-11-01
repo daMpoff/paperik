@@ -1,5 +1,6 @@
 use crate::layout::{self, Layout};
 use paperik_document::Document;
+use paperik_document::editor::Selection;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -34,6 +35,8 @@ pub struct View<'a> {
     pub layout: Option<&'a Layout>,
     pub filename: &'a str,
     pub message: &'a str,
+    pub selection: Option<Selection>,
+    pub dirty: bool,
 }
 
 pub fn panes(width: f32, height: f32) -> (f32, f32, f32, f32) {
@@ -428,7 +431,7 @@ impl Renderer {
         )?;
         if right - left > 500.0 {
             self.text(
-                "Только просмотр",
+                "Правки в памяти",
                 right - 140.0,
                 116.0,
                 130.0,
@@ -490,6 +493,7 @@ impl Renderer {
                     .join("\n\n");
                 if let Some(saved) = doc
                     .saved_page_count
+                    .filter(|_| !v.dirty)
                     .filter(|saved| *saved != layout.pages.len())
                 {
                     if !warnings.is_empty() {
@@ -515,7 +519,7 @@ impl Renderer {
                     )?;
                 }
             }
-            self.text("Ctrl+O — открыть\nКолесо — прокрутка\nCtrl+колесо — масштаб\nHome / End — начало / конец\nCtrl+0 — по ширине", right+20.0, bottom-150.0, 240.0, TextStyle { size: 12.0, color: muted, bold: false })?;
+            self.text("DOCX пока не сохраняется\nCtrl+Z / Ctrl+Y — отмена / повтор\nCtrl+C / X / V — буфер обмена\nShift+стрелки — выделение\nCtrl+колесо — масштаб\nCtrl+O — открыть", right+20.0, bottom-150.0, 240.0, TextStyle { size: 12.0, color: muted, bold: false })?;
         }
         // Clip both pages and document text to the central workspace.
         unsafe {
@@ -547,6 +551,14 @@ impl Renderer {
                 unsafe {
                     self.target.SetTransform(&matrix(v.zoom, x, y));
                 }
+                if let Some(selection) = v.selection {
+                    for highlight in layout.highlights(doc, index, selection)? {
+                        self.fill(
+                            rect(highlight.x, highlight.y, highlight.width, highlight.height),
+                            [190, 218, 203],
+                        )?;
+                    }
+                }
                 draw_page(&self.target, page, doc.page.width)?;
                 unsafe {
                     self.target.SetTransform(&matrix(1.0, 0.0, 0.0));
@@ -555,7 +567,7 @@ impl Renderer {
         } else {
             self.text(
                 if v.message.is_empty() {
-                    "Откройте DOCX, чтобы начать просмотр"
+                    "Откройте DOCX, чтобы начать работу"
                 } else {
                     v.message
                 },
@@ -578,10 +590,19 @@ impl Renderer {
             let page = ((v.scroll / (doc.page.height + 24.0)).floor() as usize + 1)
                 .min(layout.pages.len());
             self.text(
-                &format!(
-                    "Страница {page} из {} · Исходник не изменён",
-                    layout.pages.len()
-                ),
+                &if !v.message.is_empty() {
+                    v.message.to_owned()
+                } else {
+                    format!(
+                        "Страница {page} из {} · {}",
+                        layout.pages.len(),
+                        if v.dirty {
+                            "Правки только в памяти"
+                        } else {
+                            "Исходник не изменён"
+                        }
+                    )
+                },
                 left + 16.0,
                 bottom + 7.0,
                 (right - left - 150.0).max(1.0),

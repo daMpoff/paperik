@@ -1,4 +1,5 @@
 //! Paperik's document model and bounded DOCX reader. No office engine is used.
+pub mod editor;
 mod package;
 
 pub use package::Package;
@@ -108,7 +109,17 @@ pub struct Paragraph {
     pub mark_font: Font,
     pub style_id: String,
     pub list_label: Option<String>,
+    pub list: Option<ListSpec>,
     pub page_field: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListSpec {
+    pub id: String,
+    pub level: u32,
+    pub start: u32,
+    pub pattern: String,
+    pub decimal: bool,
 }
 impl Paragraph {
     pub fn text(&self) -> String {
@@ -442,6 +453,7 @@ fn read_paragraphs(
         let (base_font, base_paragraph) = styles.resolve(&style_id)?;
         let mut paragraph_style = base_paragraph;
         let mut label = None;
+        let mut list = None;
         if let Some(num) = props.and_then(|p| child(p, "numPr")) {
             let num_id = val(num, "numId").unwrap_or("0");
             let level = val(num, "ilvl").unwrap_or("0");
@@ -472,6 +484,13 @@ fn read_paragraphs(
                         .entry((num_id.into(), level.into()))
                         .or_insert(start);
                     let text = val(definition, "lvlText").unwrap_or("•");
+                    list = Some(ListSpec {
+                        id: num_id.into(),
+                        level: level.parse().unwrap_or(0),
+                        start,
+                        pattern: text.into(),
+                        decimal: val(definition, "numFmt") == Some("decimal"),
+                    });
                     label = Some(match val(definition, "numFmt").unwrap_or("bullet") {
                         "bullet" => {
                             if text.contains('\u{f0b7}') {
@@ -551,6 +570,7 @@ fn read_paragraphs(
             mark_font,
             style_id,
             list_label: label,
+            list,
             page_field,
         });
     }

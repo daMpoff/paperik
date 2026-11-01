@@ -14,6 +14,7 @@
 - `simd-adler32 0.3.10`: `MIT`.
 - `syn 2.0.119`: `MIT OR Apache-2.0`.
 - `unicode-ident 1.0.27`: `(MIT OR Apache-2.0) AND Unicode-3.0`.
+- `unicode-segmentation 1.13.3`: `MIT OR Apache-2.0`; выбран MIT, сохранены COPYRIGHT и обе лицензии.
 - `windows 0.62.2`: `MIT OR Apache-2.0`.
 - `windows-collections 0.3.2`: `MIT OR Apache-2.0`.
 - `windows-core 0.62.2`: `MIT OR Apache-2.0`.

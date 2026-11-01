@@ -1,11 +1,15 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[cfg(target_os = "windows")]
+mod clipboard;
+#[cfg(target_os = "windows")]
 mod export;
 #[cfg(target_os = "windows")]
 mod layout;
 #[cfg(target_os = "windows")]
 mod render;
+#[cfg(target_os = "windows")]
+mod text_input;
 #[cfg(target_os = "windows")]
 mod window;
 

@@ -3,6 +3,7 @@ use crate::{
     render::{self, Renderer, View},
 };
 use paperik_document::Document;
+use paperik_document::editor::{Edit, Editor, Position};
 use std::{
     io,
     path::PathBuf,
@@ -13,7 +14,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
     UI::{
-        Controls::Dialogs::*, HiDpi::*, Input::KeyboardAndMouse::*, Shell::*,
+        Controls::Dialogs::*, HiDpi::*, Input::Ime::*, Input::KeyboardAndMouse::*, Shell::*,
         WindowsAndMessaging::*,
     },
 };
@@ -23,7 +24,7 @@ const TITLE: *const u16 = windows_sys::w!("Paperik");
 
 struct State {
     renderer: Option<Renderer>,
-    document: Option<Document>,
+    editor: Option<Editor>,
     layout: Option<Layout>,
     filename: String,
     message: String,
@@ -33,8 +34,37 @@ struct State {
     zoom: f32,
     scroll: f32,
     dark: bool,
+    focused: bool,
+    dragging: bool,
+    drag_point: (f32, f32),
+    upstream: bool,
+    preferred_x: Option<f32>,
+    input: crate::text_input::Utf16Input,
+    composing: bool,
 }
 impl State {
+    fn empty(dpi: f32) -> Self {
+        Self {
+            renderer: None,
+            editor: None,
+            layout: None,
+            filename: String::new(),
+            message: String::new(),
+            width: 1320.0,
+            height: 820.0,
+            dpi,
+            zoom: 1.0,
+            scroll: 0.0,
+            dark: false,
+            focused: false,
+            dragging: false,
+            drag_point: (0.0, 0.0),
+            upstream: false,
+            preferred_x: None,
+            input: crate::text_input::Utf16Input::default(),
+            composing: false,
+        }
+    }
     fn view(&self) -> View<'_> {
         View {
             width: self.width,
@@ -42,34 +72,149 @@ impl State {
             zoom: self.zoom,
             scroll: self.scroll,
             dark: self.dark,
-            document: self.document.as_ref(),
+            document: self.editor.as_ref().map(Editor::document),
             layout: self.layout.as_ref(),
             filename: &self.filename,
             message: &self.message,
+            selection: self.editor.as_ref().map(Editor::selection),
+            dirty: self.editor.as_ref().is_some_and(Editor::dirty),
         }
     }
     fn clamp(&mut self) {
         self.scroll = self.scroll.clamp(0.0, render::max_scroll(&self.view()));
     }
     fn load(&mut self, path: PathBuf) -> Result<(), String> {
-        let document = Document::open(&path)?;
+        let editor = Editor::new(Document::open(&path)?);
+        let document = editor.document();
         let layout = self
             .renderer
             .as_ref()
             .ok_or("Рендерер недоступен")?
-            .document(&document)
+            .document(document)
             .map_err(|e| format!("Не удалось выполнить вёрстку: {e}"))?;
         self.filename = path
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        self.zoom = render::fit_zoom(self.width, self.height, &document);
+        self.zoom = render::fit_zoom(self.width, self.height, document);
         self.scroll = 0.0;
-        self.document = Some(document);
+        self.editor = Some(editor);
         self.layout = Some(layout);
         self.message.clear();
+        self.upstream = false;
+        self.preferred_x = None;
+        self.input.clear();
         Ok(())
+    }
+    fn apply(&mut self, edit: Edit) -> Result<(), String> {
+        let Some(editor) = &mut self.editor else {
+            return Ok(());
+        };
+        if let Some(change) = editor.prepare(edit)? {
+            let layout = self
+                .renderer
+                .as_ref()
+                .ok_or("Рендерер недоступен")?
+                .document(&change.document)
+                .map_err(|error| {
+                    format!("Изменение отменено: не удалось выполнить вёрстку ({error})")
+                })?;
+            editor.commit(change)?;
+            self.layout = Some(layout);
+            self.upstream = false;
+            self.preferred_x = None;
+        }
+        self.message.clear();
+        self.reveal();
+        Ok(())
+    }
+    fn caret(&self) -> Option<crate::layout::Caret> {
+        let editor = self.editor.as_ref()?;
+        self.layout
+            .as_ref()?
+            .caret(editor.document(), editor.selection().focus, self.upstream)
+            .ok()
+            .flatten()
+    }
+    fn hit(&self, x: f32, y: f32) -> Option<(Position, bool)> {
+        let editor = self.editor.as_ref()?;
+        let doc = editor.document();
+        let layout = self.layout.as_ref()?;
+        let (left, right, top, _) = render::panes(self.width, self.height);
+        let page_x = left + (right - left - doc.page.width * self.zoom) / 2.0;
+        let absolute_y = (y - top) / self.zoom + self.scroll - 24.0;
+        let index = (absolute_y.max(0.0) / (doc.page.height + 24.0)).floor() as usize;
+        let index = index.min(layout.pages.len().saturating_sub(1));
+        layout
+            .hit_test(
+                doc,
+                index,
+                (x - page_x) / self.zoom,
+                absolute_y - index as f32 * (doc.page.height + 24.0),
+            )
+            .ok()
+            .flatten()
+    }
+    fn reveal(&mut self) {
+        if let (Some(caret), Some(editor)) = (self.caret(), self.editor.as_ref()) {
+            let (_, _, top, bottom) = render::panes(self.width, self.height);
+            let y = 24.0 + caret.page as f32 * (editor.document().page.height + 24.0) + caret.y;
+            let visible = (bottom - top) / self.zoom;
+            if y < self.scroll + 12.0 {
+                self.scroll = (y - 12.0).max(0.0);
+            }
+            if y + caret.height > self.scroll + visible - 12.0 {
+                self.scroll = y + caret.height - visible + 12.0;
+            }
+            self.clamp();
+        }
+    }
+    fn move_vertical(&mut self, steps: isize, extend: bool) {
+        let Some(caret) = self.caret() else {
+            return;
+        };
+        let x = *self.preferred_x.get_or_insert(caret.x);
+        if let (Some(editor), Some(layout)) = (&mut self.editor, &self.layout)
+            && let Ok(Some((position, upstream))) = layout.vertical(
+                editor.document(),
+                editor.selection().focus,
+                self.upstream,
+                x,
+                steps,
+            )
+        {
+            editor.set_position(position, extend);
+            self.upstream = upstream;
+        }
+        self.reveal();
+    }
+    fn move_edge(&mut self, right: bool, whole: bool, extend: bool) {
+        if let (Some(editor), Some(layout)) = (&mut self.editor, &self.layout) {
+            let position = if whole {
+                Some(if right {
+                    editor.end()
+                } else {
+                    Position::default()
+                })
+            } else {
+                layout
+                    .line_edge(
+                        editor.document(),
+                        editor.selection().focus,
+                        self.upstream,
+                        right,
+                    )
+                    .ok()
+                    .flatten()
+            };
+            if let Some(position) = position {
+                editor.set_position(position, extend);
+            }
+            self.upstream = right;
+            self.preferred_x = None;
+        }
+        self.reveal();
     }
 }
 struct Window(HWND);
@@ -139,7 +284,7 @@ pub fn run(smoke_test: bool, path: Option<PathBuf>) -> Result<(), String> {
         }
         let icon = brand_icon();
         let class = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
+            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
             lpfnWndProc: Some(procedure),
             hInstance: instance,
             hIcon: icon.0,
@@ -153,19 +298,7 @@ pub fn run(smoke_test: bool, path: Option<PathBuf>) -> Result<(), String> {
         }
         let _class = Class(instance);
         let dpi = GetDpiForSystem().max(96) as f32;
-        let mut state = Box::new(State {
-            renderer: None,
-            document: None,
-            layout: None,
-            filename: String::new(),
-            message: String::new(),
-            width: 1320.0,
-            height: 820.0,
-            dpi,
-            zoom: 1.0,
-            scroll: 0.0,
-            dark: false,
-        });
+        let mut state = Box::new(State::empty(dpi));
         let mut bounds = RECT {
             left: 0,
             top: 0,
@@ -283,6 +416,9 @@ fn open_dialog(window: HWND) -> Option<PathBuf> {
 
 unsafe fn open_file(window: HWND, path: PathBuf) {
     unsafe {
+        if !discard_allowed(window) {
+            return;
+        }
         let pointer = state_pointer(window);
         if pointer.is_null() {
             return;
@@ -298,6 +434,169 @@ unsafe fn open_file(window: HWND, path: PathBuf) {
             SetWindowTextW(window, title.as_ptr());
         }
         InvalidateRect(window, null(), 0);
+        sync_caret(window);
+    }
+}
+
+/// No State reference crosses a modal/reentrant Windows call.
+unsafe fn discard_allowed(window: HWND) -> bool {
+    unsafe {
+        let pointer = state_pointer(window);
+        let dirty = !pointer.is_null() && (&*pointer).editor.as_ref().is_some_and(Editor::dirty);
+        !dirty
+            || MessageBoxW(
+                window,
+                windows_sys::w!(
+                    "Изменения хранятся только в памяти. Сохранение DOCX пока не реализовано.\n\nПродолжить и потерять эти изменения?"
+                ),
+                windows_sys::w!("Paperik — несохранённые изменения"),
+                MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2,
+            ) == IDOK
+    }
+}
+unsafe fn sync_caret(window: HWND) {
+    unsafe {
+        let pointer = state_pointer(window);
+        if pointer.is_null() {
+            return;
+        }
+        let geometry = {
+            let state = &*pointer;
+            if !state.focused {
+                return;
+            }
+            state.editor.as_ref().and_then(|editor| {
+                let caret = state.caret()?;
+                let doc = editor.document();
+                let (left, right, top, bottom) = render::panes(state.width, state.height);
+                let x = left
+                    + (right - left - doc.page.width * state.zoom) / 2.0
+                    + caret.x * state.zoom;
+                let y = top
+                    + (24.0 + caret.page as f32 * (doc.page.height + 24.0) + caret.y
+                        - state.scroll)
+                        * state.zoom;
+                let height = caret.height * state.zoom;
+                let scale = state.dpi / 96.0;
+                Some((
+                    x,
+                    y,
+                    height,
+                    left,
+                    right,
+                    top,
+                    bottom,
+                    scale,
+                    editor.selection().collapsed(),
+                ))
+            })
+        };
+        DestroyCaret();
+        if let Some((x, y, height, left, right, top, bottom, scale, collapsed)) = geometry {
+            if collapsed && x >= left && x <= right && y >= top && y + height <= bottom {
+                CreateCaret(
+                    window,
+                    null_mut(),
+                    scale.round().max(1.0) as i32,
+                    (height * scale).round().max(1.0) as i32,
+                );
+                SetCaretPos((x * scale).round() as i32, (y * scale).round() as i32);
+                ShowCaret(window);
+            }
+            let context = ImmGetContext(window);
+            if !context.is_null() {
+                let point = POINT {
+                    x: (x * scale).round() as i32,
+                    y: (y * scale).round() as i32,
+                };
+                let composition = COMPOSITIONFORM {
+                    dwStyle: CFS_POINT,
+                    ptCurrentPos: point,
+                    ..Default::default()
+                };
+                ImmSetCompositionWindow(context, &composition);
+                let candidate = CANDIDATEFORM {
+                    dwStyle: CFS_CANDIDATEPOS,
+                    ptCurrentPos: POINT {
+                        y: point.y + (height * scale) as i32,
+                        ..point
+                    },
+                    ..Default::default()
+                };
+                ImmSetCandidateWindow(context, &candidate);
+                ImmReleaseContext(window, context);
+            }
+        }
+    }
+}
+unsafe fn refresh(window: HWND, reveal: bool) {
+    unsafe {
+        let pointer = state_pointer(window);
+        if pointer.is_null() {
+            return;
+        }
+        let title = {
+            let state = &mut *pointer;
+            if reveal {
+                state.reveal();
+            }
+            state.clamp();
+            format!(
+                "{}{} — Paperik",
+                if state.editor.as_ref().is_some_and(Editor::dirty) {
+                    "* "
+                } else {
+                    ""
+                },
+                state.filename
+            )
+            .encode_utf16()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+        };
+        SetWindowTextW(window, title.as_ptr());
+        sync_caret(window);
+        InvalidateRect(window, null(), 0);
+    }
+}
+unsafe fn edit(window: HWND, command: Edit) {
+    unsafe {
+        let pointer = state_pointer(window);
+        if pointer.is_null() {
+            return;
+        }
+        if let Err(error) = (&mut *pointer).apply(command) {
+            (&mut *pointer).message = error;
+        }
+        refresh(window, true);
+    }
+}
+unsafe fn drag(window: HWND) {
+    unsafe {
+        let pointer = state_pointer(window);
+        if pointer.is_null() {
+            return;
+        }
+        let state = &mut *pointer;
+        if !state.dragging {
+            return;
+        }
+        let (x, y) = state.drag_point;
+        let (_, _, top, bottom) = render::panes(state.width, state.height);
+        if y < top {
+            state.scroll -= ((top - y) * 0.3).clamp(4.0, 48.0) / state.zoom;
+        }
+        if y > bottom {
+            state.scroll += ((y - bottom) * 0.3).clamp(4.0, 48.0) / state.zoom;
+        }
+        state.clamp();
+        if let Some((position, upstream)) = state.hit(x, y.clamp(top, bottom)) {
+            if let Some(editor) = &mut state.editor {
+                editor.set_position(position, true);
+            }
+            state.upstream = upstream;
+        }
+        refresh(window, false);
     }
 }
 
@@ -316,6 +615,23 @@ unsafe extern "system" fn procedure(
         }
         let pointer = state_pointer(window);
         match message {
+            WM_CLOSE => {
+                if discard_allowed(window) {
+                    DestroyWindow(window);
+                }
+                0
+            }
+            WM_SETFOCUS if !pointer.is_null() => {
+                (&mut *pointer).focused = true;
+                sync_caret(window);
+                0
+            }
+            WM_KILLFOCUS if !pointer.is_null() => {
+                (&mut *pointer).focused = false;
+                (&mut *pointer).input.clear();
+                DestroyCaret();
+                0
+            }
             WM_DESTROY => {
                 PostQuitMessage(0);
                 0
@@ -342,6 +658,7 @@ unsafe extern "system" fn procedure(
                 }
                 state.clamp();
                 InvalidateRect(window, null(), 0);
+                sync_caret(window);
                 0
             }
             WM_DPICHANGED if lparam != 0 => {
@@ -365,6 +682,7 @@ unsafe extern "system" fn procedure(
                 0
             }
             WM_PAINT => {
+                HideCaret(window);
                 let mut paint = PAINTSTRUCT::default();
                 BeginPaint(window, &mut paint);
                 if !pointer.is_null() {
@@ -376,6 +694,7 @@ unsafe extern "system" fn procedure(
                     }
                 }
                 EndPaint(window, &paint);
+                ShowCaret(window);
                 0
             }
             WM_DROPFILES => {
@@ -400,39 +719,300 @@ unsafe extern "system" fn procedure(
                 }
                 state.clamp();
                 InvalidateRect(window, null(), 0);
+                sync_caret(window);
                 0
             }
             WM_KEYDOWN if !pointer.is_null() => {
-                let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
+                let ctrl = GetKeyState(VK_CONTROL as i32) < 0 && GetKeyState(VK_MENU as i32) >= 0;
+                let shift = GetKeyState(VK_SHIFT as i32) < 0;
+                if (&*pointer).composing {
+                    return DefWindowProcW(window, message, wparam, lparam);
+                }
+                // VK_PACKET may occur before EACH surrogate of a Unicode input.
+                // Only an actual navigation/control command cancels a pending pair.
+                if ctrl
+                    || matches!(
+                        wparam as u16,
+                        VK_LEFT
+                            | VK_RIGHT
+                            | VK_UP
+                            | VK_DOWN
+                            | VK_HOME
+                            | VK_END
+                            | VK_NEXT
+                            | VK_PRIOR
+                            | VK_BACK
+                            | VK_DELETE
+                            | VK_RETURN
+                            | VK_TAB
+                    )
+                {
+                    (&mut *pointer).input.clear();
+                }
                 if ctrl && wparam == b'O' as usize {
                     if let Some(path) = open_dialog(window) {
                         open_file(window, path);
                     }
                     return 0;
                 }
+                if ctrl && matches!(wparam as u8, b'C' | b'X') {
+                    let text = (&*pointer)
+                        .editor
+                        .as_ref()
+                        .map(Editor::selected_text)
+                        .unwrap_or_default();
+                    if !text.is_empty() {
+                        match crate::clipboard::write(window, &text) {
+                            Ok(()) if wparam == b'X' as usize => {
+                                edit(window, Edit::Insert(String::new()))
+                            }
+                            Ok(()) => {}
+                            Err(error) => (&mut *pointer).message = error,
+                        }
+                    }
+                    refresh(window, false);
+                    return 0;
+                }
+                if ctrl && wparam == b'V' as usize {
+                    if (&*pointer).editor.is_some() {
+                        match crate::clipboard::read(window) {
+                            Ok(text) => edit(window, Edit::Insert(text)),
+                            Err(error) => (&mut *pointer).message = error,
+                        }
+                    }
+                    refresh(window, true);
+                    return 0;
+                }
+                if ctrl && (wparam == b'Z' as usize || wparam == b'Y' as usize) {
+                    edit(
+                        window,
+                        if shift || wparam == b'Y' as usize {
+                            Edit::Redo
+                        } else {
+                            Edit::Undo
+                        },
+                    );
+                    return 0;
+                }
+                if ctrl && wparam == b'S' as usize {
+                    (&mut *pointer).message =
+                        "Сохранение DOCX пока не реализовано. Правки остаются в памяти.".into();
+                    refresh(window, false);
+                    return 0;
+                }
+                if wparam == VK_BACK as usize || wparam == VK_DELETE as usize {
+                    edit(
+                        window,
+                        if wparam == VK_BACK as usize {
+                            Edit::Backspace { word: ctrl }
+                        } else {
+                            Edit::Delete { word: ctrl }
+                        },
+                    );
+                    return 0;
+                }
+                if wparam == VK_RETURN as usize {
+                    edit(
+                        window,
+                        if shift {
+                            Edit::SoftBreak
+                        } else {
+                            Edit::Insert("\n".into())
+                        },
+                    );
+                    return 0;
+                }
+                if wparam == VK_TAB as usize {
+                    edit(window, Edit::Insert("\t".into()));
+                    return 0;
+                }
                 let state = &mut *pointer;
                 let (_, _, top, bottom) = render::panes(state.width, state.height);
                 match wparam as u16 {
-                    VK_HOME => state.scroll = 0.0,
-                    VK_END => state.scroll = render::max_scroll(&state.view()),
-                    VK_NEXT => state.scroll += (bottom - top - 48.0) / state.zoom,
-                    VK_PRIOR => state.scroll -= (bottom - top - 48.0) / state.zoom,
-                    VK_DOWN => state.scroll += 48.0 / state.zoom,
-                    VK_UP => state.scroll -= 48.0 / state.zoom,
+                    VK_HOME => state.move_edge(false, ctrl, shift),
+                    VK_END => state.move_edge(true, ctrl, shift),
+                    VK_NEXT | VK_PRIOR => {
+                        let lines = ((bottom - top - 48.0) / state.zoom / 24.0).max(1.0) as isize;
+                        state.move_vertical(
+                            if wparam == VK_NEXT as usize {
+                                lines
+                            } else {
+                                -lines
+                            },
+                            shift,
+                        );
+                    }
+                    VK_DOWN => state.move_vertical(1, shift),
+                    VK_UP => state.move_vertical(-1, shift),
+                    VK_LEFT | VK_RIGHT => {
+                        if let Some(editor) = &mut state.editor {
+                            editor.move_horizontal(wparam == VK_RIGHT as usize, shift, ctrl);
+                        }
+                        state.upstream = false;
+                        state.preferred_x = None;
+                        state.reveal();
+                    }
+                    key if ctrl && key == b'A' as u16 => {
+                        if let Some(editor) = &mut state.editor {
+                            editor.select_all();
+                        }
+                    }
                     VK_ADD | VK_OEM_PLUS if ctrl => state.zoom = (state.zoom * 1.1).min(2.0),
                     VK_SUBTRACT | VK_OEM_MINUS if ctrl => state.zoom = (state.zoom / 1.1).max(0.25),
                     key if ctrl && key == b'0' as u16 => {
-                        if let Some(doc) = &state.document {
-                            state.zoom = render::fit_zoom(state.width, state.height, doc);
+                        if let Some(editor) = &state.editor {
+                            state.zoom =
+                                render::fit_zoom(state.width, state.height, editor.document());
                         }
                     }
                     _ => return DefWindowProcW(window, message, wparam, lparam),
                 }
-                state.clamp();
-                InvalidateRect(window, null(), 0);
+                refresh(window, false);
                 0
             }
+            WM_CHAR if !pointer.is_null() => {
+                let unit = wparam as u16;
+                if unit >= 32 && unit != 127 && !(&*pointer).composing {
+                    match (&mut *pointer).input.push(unit) {
+                        Ok(Some(ch)) => edit(window, Edit::Insert(ch.to_string())),
+                        Ok(None) => {}
+                        Err(error) => {
+                            (&mut *pointer).message = error.into();
+                            refresh(window, false);
+                        }
+                    }
+                }
+                0
+            }
+            WM_UNICHAR if !pointer.is_null() => {
+                if wparam == 0xffff {
+                    return 1;
+                }
+                if let Some(ch) = char::from_u32(wparam as u32).filter(|ch| !ch.is_control()) {
+                    edit(window, Edit::Insert(ch.to_string()));
+                }
+                0
+            }
+            WM_IME_STARTCOMPOSITION if !pointer.is_null() => {
+                (&mut *pointer).composing = true;
+                (&mut *pointer).input.clear();
+                sync_caret(window);
+                DefWindowProcW(window, message, wparam, lparam)
+            }
+            WM_IME_ENDCOMPOSITION if !pointer.is_null() => {
+                (&mut *pointer).composing = false;
+                DefWindowProcW(window, message, wparam, lparam)
+            }
+            WM_IME_COMPOSITION if !pointer.is_null() && (lparam as u32 & GCS_RESULTSTR) != 0 => {
+                let context = ImmGetContext(window);
+                if !context.is_null() {
+                    let size = ImmGetCompositionStringW(context, GCS_RESULTSTR, null_mut(), 0);
+                    let result = if (0..=2_000_000).contains(&size) && size % 2 == 0 {
+                        let mut units = vec![0u16; size as usize / 2];
+                        let count = ImmGetCompositionStringW(
+                            context,
+                            GCS_RESULTSTR,
+                            units.as_mut_ptr().cast(),
+                            size as u32,
+                        );
+                        if count == size {
+                            String::from_utf16(&units).map_err(|_| "Повреждённый Unicode от IME")
+                        } else {
+                            Err("Не удалось получить результат IME")
+                        }
+                    } else {
+                        Err("Неподдерживаемый размер результата IME")
+                    };
+                    ImmReleaseContext(window, context);
+                    match result {
+                        Ok(text) => edit(window, Edit::Insert(text)),
+                        Err(error) => {
+                            (&mut *pointer).message = error.into();
+                            refresh(window, false);
+                        }
+                    }
+                }
+                // Do not let DefWindowProc generate a second WM_IME_CHAR for this result.
+                let rest = lparam & !(GCS_RESULTSTR as isize);
+                if rest != 0 {
+                    DefWindowProcW(window, message, wparam, rest)
+                } else {
+                    0
+                }
+            }
+            WM_LBUTTONDOWN | WM_LBUTTONDBLCLK if !pointer.is_null() => {
+                let state = &*pointer;
+                let x = (lparam as u16 as i16) as f32 * 96.0 / state.dpi;
+                let y = ((lparam >> 16) as u16 as i16) as f32 * 96.0 / state.dpi;
+                let (left, right, top, bottom) = render::panes(state.width, state.height);
+                if x > left && x < right && y >= top && y < bottom {
+                    SetFocus(window);
+                    if let Some((position, upstream)) = (&*pointer).hit(x, y) {
+                        let state = &mut *pointer;
+                        if let Some(editor) = &mut state.editor {
+                            if message == WM_LBUTTONDBLCLK {
+                                editor.select_word(position);
+                            } else {
+                                editor.set_position(position, GetKeyState(VK_SHIFT as i32) < 0);
+                            }
+                        }
+                        state.upstream = upstream;
+                        state.preferred_x = None;
+                        state.input.clear();
+                        state.dragging = message != WM_LBUTTONDBLCLK;
+                        state.drag_point = (x, y);
+                        if state.dragging {
+                            SetCapture(window);
+                            SetTimer(window, 1, 40, None);
+                        }
+                        refresh(window, false);
+                    }
+                }
+                0
+            }
+            WM_MOUSEMOVE if !pointer.is_null() && (&*pointer).dragging => {
+                let dpi = (&*pointer).dpi;
+                (&mut *pointer).drag_point = (
+                    (lparam as u16 as i16) as f32 * 96.0 / dpi,
+                    ((lparam >> 16) as u16 as i16) as f32 * 96.0 / dpi,
+                );
+                drag(window);
+                0
+            }
+            WM_TIMER if wparam == 1 && !pointer.is_null() => {
+                drag(window);
+                0
+            }
+            WM_CAPTURECHANGED if !pointer.is_null() => {
+                (&mut *pointer).dragging = false;
+                KillTimer(window, 1);
+                0
+            }
+            WM_SETCURSOR if !pointer.is_null() && lparam as u16 == HTCLIENT as u16 => {
+                let mut point = POINT::default();
+                GetCursorPos(&mut point);
+                ScreenToClient(window, &mut point);
+                let state = &*pointer;
+                let (left, right, top, bottom) = render::panes(state.width, state.height);
+                let x = point.x as f32 * 96.0 / state.dpi;
+                let y = point.y as f32 * 96.0 / state.dpi;
+                let text =
+                    state.editor.is_some() && x > left && x < right && y >= top && y < bottom;
+                SetCursor(LoadCursorW(
+                    null_mut(),
+                    if text { IDC_IBEAM } else { IDC_ARROW },
+                ));
+                1
+            }
             WM_LBUTTONUP if !pointer.is_null() => {
+                if (&*pointer).dragging {
+                    drag(window);
+                    (&mut *pointer).dragging = false;
+                    KillTimer(window, 1);
+                    ReleaseCapture();
+                    refresh(window, false);
+                    return 0;
+                }
                 let state = &*pointer;
                 let x = (lparam as u16 as i16) as f32 * 96.0 / state.dpi;
                 let y = ((lparam >> 16) as u16 as i16) as f32 * 96.0 / state.dpi;
@@ -458,16 +1038,16 @@ unsafe extern "system" fn procedure(
                 if x < left
                     && y >= 273.0
                     && y < bottom
-                    && let (Some(doc), Some(layout)) = (&state.document, &state.layout)
+                    && let (Some(editor), Some(layout)) = (&state.editor, &state.layout)
                 {
+                    let doc = editor.document();
                     let current = (state.scroll / (doc.page.height + 24.0)).floor() as usize;
                     let index = current.saturating_sub(2) + ((y - 273.0) / 34.0) as usize;
                     if index < layout.pages.len() {
                         state.scroll = index as f32 * (doc.page.height + 24.0);
                     }
                 }
-                state.clamp();
-                InvalidateRect(window, null(), 0);
+                refresh(window, false);
                 0
             }
             _ => DefWindowProcW(window, message, wparam, lparam),
@@ -479,5 +1059,88 @@ pub fn show_error(message: &str) {
     let wide: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
     unsafe {
         MessageBoxW(null_mut(), wide.as_ptr(), TITLE, MB_OK | MB_ICONERROR);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_input_dispatch_edits_once_reflows_and_never_writes_source() {
+        // Exercise our callback, not an input injector or any external window.
+        unsafe {
+            let instance = GetModuleHandleW(null());
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(procedure),
+                hInstance: instance,
+                lpszClassName: CLASS,
+                ..Default::default()
+            };
+            assert_ne!(RegisterClassW(&class), 0);
+            let _class = Class(instance);
+            let mut state = Box::new(State::empty(96.0));
+            let handle = CreateWindowExW(
+                0,
+                CLASS,
+                TITLE,
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                1320,
+                820,
+                null_mut(),
+                null_mut(),
+                instance,
+                (&mut *state as *mut State).cast(),
+            );
+            assert!(!handle.is_null());
+            let window = Window(handle);
+            state.renderer = Some(Renderer::new(handle, 1320, 820, 96.0).unwrap());
+            let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/formatting.docx");
+            state.load(fixture.clone()).unwrap();
+            let source = std::fs::read(&fixture).unwrap();
+            let paragraphs = state.editor.as_ref().unwrap().document().paragraphs.clone();
+            procedure(handle, WM_KEYDOWN, VK_PACKET as usize, 0);
+            procedure(handle, WM_CHAR, 0xd83d, 0);
+            procedure(handle, WM_KEYDOWN, VK_PACKET as usize, 0);
+            procedure(handle, WM_CHAR, 0xde80, 0);
+            assert!(
+                state.editor.as_ref().unwrap().document().paragraphs[0]
+                    .text()
+                    .starts_with('🚀')
+            );
+            procedure(handle, WM_KEYDOWN, VK_BACK as usize, 0);
+            procedure(handle, WM_CHAR, 8, 0);
+            assert_eq!(
+                state.editor.as_ref().unwrap().document().paragraphs,
+                paragraphs
+            );
+            let count = paragraphs.len();
+            procedure(handle, WM_KEYDOWN, VK_RETURN as usize, 0);
+            procedure(handle, WM_CHAR, 13, 0);
+            assert_eq!(
+                state.editor.as_ref().unwrap().document().paragraphs.len(),
+                count + 1
+            );
+            edit(handle, Edit::Undo);
+            assert_eq!(
+                state.editor.as_ref().unwrap().document().paragraphs,
+                paragraphs
+            );
+            edit(handle, Edit::Redo);
+            assert_eq!(
+                state.editor.as_ref().unwrap().document().paragraphs.len(),
+                count + 1
+            );
+            state
+                .renderer
+                .as_ref()
+                .unwrap()
+                .paint(&state.view())
+                .unwrap();
+            assert_eq!(std::fs::read(&fixture).unwrap(), source);
+            drop(window);
+        }
     }
 }

@@ -8,3 +8,4 @@ publish = false
 [dependencies]
 flate2.workspace = true
 roxmltree.workspace = true
+unicode-segmentation.workspace = true
