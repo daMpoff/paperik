@@ -41,3 +41,7 @@ Desktop.ini
 # Подготовленный брендбук
 !/docs/brand/brandbook.pdf
 !/tests/fixtures/formatting.docx
+
+# Обезличенные макеты для README
+!/assets/readme/interface-light.png
+!/assets/readme/interface-dark.png
