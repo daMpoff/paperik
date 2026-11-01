@@ -173,3 +173,32 @@ fn unsupported_objects_are_not_silently_dropped() {
             .contains("таблицы")
     );
 }
+
+#[test]
+fn typography_features_follow_style_inheritance_and_direct_overrides() {
+    let mut parts = fixture_parts();
+    parts[3].1=parts[3].1.replace("<w:sz w:val=\"28\"/>",r#"<w:sz w:val="28"/><w:kern w:val="24"/><w14:ligatures xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:val="standardContextual"/>"#);
+    parts[4].1=parts[4].1.replace("<w:i/>",r#"<w:i/><w:kern w:val="0"/><w14:ligatures xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:val="none"/>"#);
+    let doc = Document::from_bytes(archive(&parts, false)).unwrap();
+    assert_eq!(doc.paragraphs[0].runs[0].font.kerning_from, Some(12.0));
+    assert_eq!(doc.paragraphs[0].runs[0].font.ligatures, 3);
+    assert_eq!(doc.paragraphs[0].runs[1].font.kerning_from, Some(0.0));
+    assert_eq!(doc.paragraphs[0].runs[1].font.ligatures, 0);
+}
+
+#[test]
+fn justification_compression_is_selected_by_document_compatibility() {
+    let mut parts = fixture_parts();
+    assert!(
+        !Document::from_bytes(archive(&parts, false))
+            .unwrap()
+            .compress_justification
+    );
+    parts[2].1=parts[2].1.replace("</Relationships>",r#"<Relationship Id="settings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>"#);
+    parts.push(("word/settings.xml".into(),format!(r#"<w:settings xmlns:w="{W}"><w:compat><w:compatSetting w:name="compatibilityMode" w:val="15"/></w:compat></w:settings>"#)));
+    assert!(
+        Document::from_bytes(archive(&parts, false))
+            .unwrap()
+            .compress_justification
+    );
+}

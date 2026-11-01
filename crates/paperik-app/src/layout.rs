@@ -1,9 +1,9 @@
 use paperik_document::{Alignment, Document, Font, LineSpacing, Paragraph};
 use std::collections::BTreeSet;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
-use windows::Win32::Graphics::Direct2D::{ID2D1HwndRenderTarget, ID2D1SolidColorBrush};
+use windows::Win32::Graphics::Direct2D::{ID2D1RenderTarget, ID2D1SolidColorBrush};
 use windows::Win32::Graphics::DirectWrite::*;
-use windows::core::{HSTRING, Result, w};
+use windows::core::{HSTRING, Interface, Result, w};
 
 #[derive(Clone)]
 pub struct Line {
@@ -13,6 +13,11 @@ pub struct Line {
     pub source_y: f32,
     pub width: f32,
     pub height: f32,
+    pub text_start: u32,
+    pub text_length: u32,
+    pub paragraph: usize,
+    pub baseline: f32,
+    pub layout_text_start: u32,
 }
 pub struct PageLayout {
     pub lines: Vec<Line>,
@@ -27,6 +32,116 @@ struct Prepared {
     before: f32,
     after: f32,
 }
+#[derive(Clone, Copy)]
+struct ParagraphSettings {
+    tab_stop: f32,
+    index: usize,
+    compress: bool,
+}
+
+impl Layout {
+    pub fn glyph_report(&self, document: &Document) -> Result<String> {
+        use std::fmt::Write;
+        let paragraphs: Vec<Vec<u16>> = document
+            .paragraphs
+            .iter()
+            .map(|p| p.text().encode_utf16().collect())
+            .collect();
+        let mut report = String::from(
+            "# Glyph positions; units=DIP; offsets=UTF-16; no source text\npage\tparagraph\toffset\tx\tbaseline\n",
+        );
+        for (page_index, page) in self.pages.iter().enumerate() {
+            for line in &page.lines {
+                let text = &paragraphs[line.paragraph];
+                let prefix = if line.text_start == 0 {
+                    document.paragraphs[line.paragraph]
+                        .list_label
+                        .as_ref()
+                        .map_or(0, |s| s.encode_utf16().count() as u32 + 1)
+                } else {
+                    0
+                };
+                for (offset, unit) in text
+                    .iter()
+                    .enumerate()
+                    .take(((line.text_start + line.text_length) as usize).min(text.len()))
+                    .skip(line.text_start as usize)
+                {
+                    if matches!(*unit, 9 | 10 | 13 | 32 | 0xdc00..=0xdfff) {
+                        continue;
+                    }
+                    let mut x = 0.0;
+                    let mut y = 0.0;
+                    let mut hit = DWRITE_HIT_TEST_METRICS::default();
+                    unsafe {
+                        line.layout.HitTestTextPosition(
+                            line.layout_text_start + prefix + offset as u32 - line.text_start,
+                            false,
+                            &mut x,
+                            &mut y,
+                            &mut hit,
+                        )?;
+                    }
+                    writeln!(
+                        &mut report,
+                        "{}\t{}\t{offset}\t{:.5}\t{:.5}",
+                        page_index + 1,
+                        line.paragraph + 1,
+                        line.x + x,
+                        line.y + line.baseline
+                    )
+                    .expect("Writing to a String cannot fail");
+                }
+            }
+        }
+        Ok(report)
+    }
+    /// Physical geometry only: diagnostics never include document text.
+    pub fn report(&self, document: &Document) -> Result<String> {
+        use std::fmt::Write;
+        let mut report = String::from(
+            "# Paperik layout; units=DIP; offsets=UTF-16; page/paragraph=1-based\npage\tparagraph\tstart\tlength\tx\tbaseline\theight\twidth\n",
+        );
+        for (index, page) in self.pages.iter().enumerate() {
+            for line in &page.lines {
+                let prefix = if line.text_start == 0 {
+                    document.paragraphs[line.paragraph]
+                        .list_label
+                        .as_ref()
+                        .map_or(0, |s| s.encode_utf16().count() as u32 + 1)
+                } else {
+                    0
+                };
+                let mut x = 0.0;
+                let mut y = 0.0;
+                let mut hit = DWRITE_HIT_TEST_METRICS::default();
+                unsafe {
+                    line.layout.HitTestTextPosition(
+                        line.layout_text_start + prefix,
+                        false,
+                        &mut x,
+                        &mut y,
+                        &mut hit,
+                    )?;
+                }
+                writeln!(
+                    &mut report,
+                    "{}\t{}\t{}\t{}\t{:.5}\t{:.5}\t{:.5}\t{:.5}",
+                    index + 1,
+                    line.paragraph + 1,
+                    line.text_start,
+                    line.text_length,
+                    line.x + x,
+                    line.y + line.baseline,
+                    line.height,
+                    line.width
+                )
+                .expect("Writing to a String cannot fail");
+            }
+        }
+        Ok(report)
+    }
+}
 
 pub fn color(rgb: [u8; 3]) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
@@ -36,7 +151,7 @@ pub fn color(rgb: [u8; 3]) -> D2D1_COLOR_F {
         a: 1.0,
     }
 }
-fn brush(target: &ID2D1HwndRenderTarget, rgb: [u8; 3]) -> Result<ID2D1SolidColorBrush> {
+fn brush(target: &ID2D1RenderTarget, rgb: [u8; 3]) -> Result<ID2D1SolidColorBrush> {
     // SAFETY: the color is valid and the returned COM object owns its resources.
     unsafe { target.CreateSolidColorBrush(&color(rgb), None) }
 }
@@ -93,7 +208,7 @@ fn font_line_box(factory: &IDWriteFactory, paragraph: &Paragraph) -> Result<Opti
                 + f32::from(metrics.descent)
                 + f32::from(metrics.lineGap))
                 * scale;
-            let baseline = f32::from(metrics.ascent) * scale;
+            let baseline = (f32::from(metrics.ascent) + f32::from(metrics.lineGap)) * scale;
             if chosen.is_none_or(|(previous, _)| height > previous) {
                 chosen = Some((height, baseline));
             }
@@ -103,7 +218,7 @@ fn font_line_box(factory: &IDWriteFactory, paragraph: &Paragraph) -> Result<Opti
 }
 
 fn shaped(
-    context: (&IDWriteFactory, &ID2D1HwndRenderTarget),
+    context: (&IDWriteFactory, &ID2D1RenderTarget),
     paragraph: &Paragraph,
     text: &[u16],
     start: u32,
@@ -129,14 +244,16 @@ fn shaped(
             w!("ru-RU"),
         )?;
         format.SetIncrementalTabStop(tab_stop.max(1.0))?;
-        let layout = factory.CreateGdiCompatibleTextLayout(
-            text,
-            &format,
-            width.max(1.0),
-            1_000_000.0,
-            1.0,
-            None,
-            true,
+        let layout = factory.CreateTextLayout(text, &format, width.max(1.0), 1_000_000.0)?;
+        let advanced: IDWriteTextLayout1 = layout.cast()?;
+        typography(
+            factory,
+            &layout,
+            base,
+            DWRITE_TEXT_RANGE {
+                startPosition: 0,
+                length: text.len() as u32,
+            },
         )?;
         let mut position = prefix;
         for run in &paragraph.runs {
@@ -168,6 +285,13 @@ fn shaped(
                 )?;
                 layout.SetUnderline(run.font.underline, range)?;
                 layout.SetStrikethrough(run.font.strike, range)?;
+                advanced.SetPairKerning(
+                    run.font
+                        .kerning_from
+                        .is_some_and(|v| v > 0.0 && run.font.points >= v),
+                    range,
+                )?;
+                typography(factory, &layout, &run.font, range)?;
                 layout.SetDrawingEffect(&brush(target, run.font.color)?, range)?;
             }
             position = end;
@@ -188,7 +312,12 @@ fn shaped(
             LineSpacing::Exact(v) => v.max(1.0),
             LineSpacing::AtLeast(v) => natural_height.max(v),
         };
-        let baseline = natural_baseline + (height - natural_height).max(0.0) / 2.0;
+        let height = (height * 15.0).round() / 15.0;
+        let baseline = natural_baseline
+            + match paragraph.style.line {
+                LineSpacing::Multiple(_) => 0.0,
+                _ => (height - natural_height).max(0.0) / 2.0,
+            };
         layout.SetLineSpacing(
             DWRITE_LINE_SPACING_METHOD_UNIFORM,
             height,
@@ -204,13 +333,61 @@ fn shaped(
     }
 }
 
+fn typography(
+    factory: &IDWriteFactory,
+    layout: &IDWriteTextLayout,
+    font: &Font,
+    range: DWRITE_TEXT_RANGE,
+) -> Result<()> {
+    unsafe {
+        let typography = factory.CreateTypography()?;
+        for (name, parameter) in [
+            (
+                DWRITE_FONT_FEATURE_TAG_KERNING,
+                u32::from(
+                    font.kerning_from
+                        .is_some_and(|v| v > 0.0 && font.points >= v),
+                ),
+            ),
+            (
+                DWRITE_FONT_FEATURE_TAG_STANDARD_LIGATURES,
+                u32::from(font.ligatures & 1 != 0),
+            ),
+            (
+                DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_LIGATURES,
+                u32::from(font.ligatures & 2 != 0),
+            ),
+            (
+                DWRITE_FONT_FEATURE_TAG_DISCRETIONARY_LIGATURES,
+                u32::from(font.ligatures & 4 != 0),
+            ),
+            (
+                DWRITE_FONT_FEATURE_TAG_HISTORICAL_LIGATURES,
+                u32::from(font.ligatures & 8 != 0),
+            ),
+        ] {
+            typography.AddFontFeature(DWRITE_FONT_FEATURE {
+                nameTag: name,
+                parameter,
+            })?;
+        }
+        layout.SetTypography(&typography, range)?;
+    }
+    Ok(())
+}
+
 fn prepare(
     factory: &IDWriteFactory,
-    target: &ID2D1HwndRenderTarget,
+    target: &ID2D1RenderTarget,
     paragraph: &Paragraph,
     width: f32,
-    tab_stop: f32,
+    settings: ParagraphSettings,
 ) -> Result<Prepared> {
+    let ParagraphSettings {
+        tab_stop,
+        index: paragraph_index,
+        ..
+    } = settings;
     let prefix = paragraph
         .list_label
         .as_ref()
@@ -225,6 +402,16 @@ fn prepare(
     }
     let width = (width - paragraph.style.left - paragraph.style.right).max(1.0);
     let first_width = (width - paragraph.style.first_line).max(1.0);
+    if paragraph.style.alignment == Alignment::Justify {
+        return justified(
+            (factory, target),
+            paragraph,
+            &text,
+            prefix.encode_utf16().count() as u32,
+            (first_width, width),
+            settings,
+        );
+    }
     let first = shaped(
         (factory, target),
         paragraph,
@@ -244,6 +431,13 @@ fn prepare(
             source_y: 0.0,
             width: first_width,
             height: line.height,
+            text_start: 0,
+            text_length: line
+                .length
+                .saturating_sub(prefix.encode_utf16().count() as u32),
+            paragraph: paragraph_index,
+            baseline: line.baseline,
+            layout_text_start: 0,
         });
         let first_length = line.length.min(text.len() as u32) as usize;
         if first_length < text.len() {
@@ -257,6 +451,7 @@ fn prepare(
                 tab_stop,
             )?;
             let mut y = 0.0;
+            let mut position = first_length as u32;
             for metric in metrics(&rest)? {
                 lines.push(Line {
                     layout: rest.clone(),
@@ -265,10 +460,190 @@ fn prepare(
                     source_y: y,
                     width,
                     height: metric.height,
+                    text_start: position.saturating_sub(prefix.encode_utf16().count() as u32),
+                    text_length: metric.length,
+                    paragraph: paragraph_index,
+                    baseline: metric.baseline,
+                    layout_text_start: position - first_length as u32,
                 });
                 y += metric.height;
+                position += metric.length;
             }
         }
+    }
+    Ok(Prepared {
+        lines,
+        before: paragraph.style.before,
+        after: paragraph.style.after,
+    })
+}
+
+// Justification may shrink ordinary inter-word spaces. Scaling the whole line
+// would also distort glyphs; only the advance of eligible U+0020 clusters moves.
+const MAX_SPACE_SHRINK: f32 = 0.25;
+
+fn justified(
+    context: (&IDWriteFactory, &ID2D1RenderTarget),
+    paragraph: &Paragraph,
+    text: &[u16],
+    prefix: u32,
+    widths: (f32, f32),
+    settings: ParagraphSettings,
+) -> Result<Prepared> {
+    let ParagraphSettings {
+        tab_stop,
+        index: paragraph_index,
+        compress,
+    } = settings;
+    let measured = shaped(context, paragraph, text, 0, prefix, 1_000_000.0, tab_stop)?;
+    let mut count = 0;
+    unsafe {
+        let _ = measured.GetClusterMetrics(None, &mut count);
+    }
+    let mut native = vec![DWRITE_CLUSTER_METRICS::default(); count as usize];
+    unsafe {
+        measured.GetClusterMetrics(Some(&mut native), &mut count)?;
+    }
+    native.truncate(count as usize);
+    let mut position = 0_usize;
+    let clusters: Vec<_> = native
+        .iter()
+        .map(|c| {
+            let start = position;
+            position += usize::from(c.length);
+            (start, position, *c)
+        })
+        .collect();
+    let mut lines = Vec::new();
+    let mut begin = 0;
+    while begin < clusters.len() {
+        let width = if begin == 0 { widths.0 } else { widths.1 };
+        let mut advance = 0.0;
+        let mut spaces = 0.0;
+        let mut visible_advance = 0.0;
+        let mut visible_spaces = 0.0;
+        let mut selected = None;
+        let mut best_adjustment = f32::INFINITY;
+        for (j, (a, b, c)) in clusters.iter().enumerate().skip(begin) {
+            advance += c.width;
+            if *b - *a == 1 && text[*a] == 32 && *a >= prefix as usize {
+                spaces += c.width;
+            }
+            if c._bitfield & 2 == 0 {
+                visible_advance = advance;
+                visible_spaces = spaces;
+            }
+            let fits = visible_advance
+                - visible_spaces * if compress { MAX_SPACE_SHRINK } else { 0.0 }
+                <= width + 0.001;
+            let hard_break = c._bitfield & 4 != 0;
+            // Keep a solidus expression together (e.g. a price and its /unit).
+            let wraps = c._bitfield & 1 != 0 && text[b - 1] != u16::from(b'/');
+            if fits && (wraps || j + 1 == clusters.len() || hard_break) {
+                let last = j + 1 == clusters.len() || hard_break;
+                let adjustment = if last && visible_advance <= width {
+                    0.0
+                } else if visible_spaces > 0.0 {
+                    ((width - visible_advance) / visible_spaces).abs()
+                } else {
+                    f32::INFINITY
+                };
+                if selected.is_none() || adjustment <= best_adjustment {
+                    selected = Some(j + 1);
+                    best_adjustment = adjustment;
+                }
+            }
+            if hard_break || !fits {
+                break;
+            }
+        }
+        // For a word wider than the column, retain the native cluster boundary.
+        let end = selected.unwrap_or_else(|| {
+            let mut total = 0.0;
+            let mut end = begin;
+            for (_, _, c) in &clusters[begin..] {
+                if total + c.width > width && end > begin {
+                    break;
+                }
+                total += c.width;
+                end += 1;
+            }
+            end.max(begin + 1)
+        });
+        let start = clusters[begin].0;
+        let stop = clusters[end - 1].1;
+        let fragment = &text[start..stop];
+        let layout = shaped(
+            context,
+            paragraph,
+            fragment,
+            start as u32,
+            prefix,
+            1_000_000.0,
+            tab_stop,
+        )?;
+        unsafe {
+            layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        }
+        let mut measured_width = DWRITE_TEXT_METRICS::default();
+        unsafe {
+            layout.GetMetrics(&mut measured_width)?;
+        }
+        let last_nonspace = fragment
+            .iter()
+            .rposition(|c| !matches!(*c, 32 | 9 | 10 | 13))
+            .map_or(0, |i| i + 1);
+        let eligible: Vec<_> = clusters[begin..end]
+            .iter()
+            .filter(|(a, b, _)| {
+                *b - *a == 1
+                    && text[*a] == 32
+                    && *a >= prefix as usize
+                    && *a < start + last_nonspace
+            })
+            .collect();
+        let space_width: f32 = eligible.iter().map(|(_, _, c)| c.width).sum();
+        let hard_break = clusters[end - 1].2._bitfield & 4 != 0;
+        let should_justify = measured_width.width > width || (end < clusters.len() && !hard_break);
+        if should_justify && space_width > 0.0 {
+            let ratio = ((width - measured_width.width) / space_width).max(-MAX_SPACE_SHRINK);
+            let advanced: IDWriteTextLayout1 = layout.cast()?;
+            for (a, _, c) in eligible {
+                unsafe {
+                    advanced.SetCharacterSpacing(
+                        0.0,
+                        c.width * ratio,
+                        c.width * (1.0 - MAX_SPACE_SHRINK),
+                        DWRITE_TEXT_RANGE {
+                            startPosition: (a - start) as u32,
+                            length: 1,
+                        },
+                    )?;
+                }
+            }
+        }
+        let metric = metrics(&layout)?[0];
+        lines.push(Line {
+            layout,
+            x: paragraph.style.left
+                + if begin == 0 {
+                    paragraph.style.first_line
+                } else {
+                    0.0
+                },
+            y: 0.0,
+            source_y: 0.0,
+            width,
+            height: metric.height,
+            text_start: (start as u32).saturating_sub(prefix),
+            text_length: (stop as u32).saturating_sub(prefix)
+                - (start as u32).saturating_sub(prefix),
+            paragraph: paragraph_index,
+            baseline: metric.baseline,
+            layout_text_start: 0,
+        });
+        begin = end;
     }
     Ok(Prepared {
         lines,
@@ -283,7 +658,7 @@ fn fonts(paragraph: &Paragraph) -> impl Iterator<Item = &Font> {
 
 pub fn build(
     factory: &IDWriteFactory,
-    target: &ID2D1HwndRenderTarget,
+    target: &ID2D1RenderTarget,
     document: &Document,
 ) -> Result<Layout> {
     let mut missing_fonts = BTreeSet::new();
@@ -311,7 +686,20 @@ pub fn build(
     let paragraphs_prepared: Vec<_> = document
         .paragraphs
         .iter()
-        .map(|p| prepare(factory, target, p, content_width, document.tab_stop))
+        .enumerate()
+        .map(|(i, p)| {
+            prepare(
+                factory,
+                target,
+                p,
+                content_width,
+                ParagraphSettings {
+                    tab_stop: document.tab_stop,
+                    index: i,
+                    compress: document.compress_justification,
+                },
+            )
+        })
         .collect::<Result<_>>()?;
     let mut pages = vec![PageLayout {
         lines: Vec::new(),
@@ -366,7 +754,7 @@ pub fn build(
                 used += line.height;
                 count += 1;
             }
-            if paragraph.style.widow && remaining.len() > 2 && count < remaining.len() {
+            if paragraph.style.widow && remaining.len() >= 2 && count < remaining.len() {
                 if count == 1 && y > top {
                     count = 0;
                 } else if remaining.len() - count == 1 && count > 2 {
@@ -428,7 +816,11 @@ pub fn build(
                 target,
                 &paragraph,
                 content_width,
-                document.tab_stop,
+                ParagraphSettings {
+                    tab_stop: document.tab_stop,
+                    index: usize::MAX,
+                    compress: document.compress_justification,
+                },
             )?;
             footer_lines.extend(prepared.lines);
         }
@@ -445,4 +837,201 @@ pub fn build(
         pages,
         missing_fonts,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use paperik_document::{ParagraphStyle, Run};
+    use windows::Win32::Graphics::Direct2D::Common::*;
+    use windows::Win32::Graphics::Direct2D::*;
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+    fn context() -> (IDWriteFactory, ID2D1DCRenderTarget) {
+        unsafe {
+            let factory: ID2D1Factory =
+                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).unwrap();
+            let target = factory
+                .CreateDCRenderTarget(&D2D1_RENDER_TARGET_PROPERTIES {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            (
+                DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap(),
+                target,
+            )
+        }
+    }
+    fn paragraph(text: &str) -> Paragraph {
+        let font = Font {
+            points: 14.0,
+            ..Default::default()
+        };
+        Paragraph {
+            runs: vec![Run {
+                text: text.into(),
+                font: font.clone(),
+            }],
+            mark_font: font,
+            style: ParagraphStyle {
+                first_line: 0.0,
+                ..Default::default()
+            },
+            style_id: String::new(),
+            list_label: None,
+            page_field: false,
+        }
+    }
+    #[test]
+    fn modern_justification_fits_by_spaces_without_scaling_glyphs() {
+        let (factory, target) = context();
+        let mut paragraph = paragraph("alpha beta gamma");
+        paragraph.style.alignment = Alignment::Justify;
+        let text: Vec<_> = paragraph.text().encode_utf16().collect();
+        let raw = shaped((&factory, &target), &paragraph, &text, 0, 0, 1000.0, 48.0).unwrap();
+        let mut measured = DWRITE_TEXT_METRICS::default();
+        unsafe {
+            raw.GetMetrics(&mut measured).unwrap();
+        }
+        let width = measured.width - 0.5;
+        let legacy = prepare(
+            &factory,
+            &target,
+            &paragraph,
+            width,
+            ParagraphSettings {
+                tab_stop: 48.0,
+                index: 0,
+                compress: false,
+            },
+        )
+        .unwrap();
+        let modern = prepare(
+            &factory,
+            &target,
+            &paragraph,
+            width,
+            ParagraphSettings {
+                tab_stop: 48.0,
+                index: 0,
+                compress: true,
+            },
+        )
+        .unwrap();
+        assert!(legacy.lines.len() > 1);
+        assert_eq!(modern.lines.len(), 1);
+        let hit = |layout: &IDWriteTextLayout, position| {
+            let mut x = 0.0;
+            let mut y = 0.0;
+            let mut info = DWRITE_HIT_TEST_METRICS::default();
+            unsafe {
+                layout
+                    .HitTestTextPosition(position, false, &mut x, &mut y, &mut info)
+                    .unwrap();
+            }
+            x
+        };
+        assert!(
+            ((hit(&raw, 1) - hit(&raw, 0))
+                - (hit(&modern.lines[0].layout, 1) - hit(&modern.lines[0].layout, 0)))
+            .abs()
+                < 0.001
+        );
+        assert_eq!(paragraph.runs[0].font.points, 14.0);
+    }
+    #[test]
+    fn proportional_spacing_keeps_the_first_baseline() {
+        let (factory, target) = context();
+        let mut paragraph = paragraph("Sample");
+        let text: Vec<_> = paragraph.text().encode_utf16().collect();
+        let single = shaped((&factory, &target), &paragraph, &text, 0, 0, 500.0, 48.0).unwrap();
+        paragraph.style.line = LineSpacing::Multiple(1.5);
+        let spaced = shaped((&factory, &target), &paragraph, &text, 0, 0, 500.0, 48.0).unwrap();
+        let a = metrics(&single).unwrap()[0];
+        let b = metrics(&spaced).unwrap()[0];
+        assert!((a.baseline - b.baseline).abs() < 0.001);
+        assert!((b.height - a.height * 1.5).abs() < 1.0 / 15.0);
+    }
+    #[test]
+    fn widow_control_keeps_a_two_line_paragraph_on_one_page() {
+        let (factory, target) = context();
+        let mut doc = Document::from_bytes(
+            include_bytes!("../../../tests/fixtures/formatting.docx").to_vec(),
+        )
+        .unwrap();
+        doc.paragraphs = vec![paragraph("first"), paragraph("one\ntwo")];
+        doc.footer.clear();
+        doc.page.width = 400.0;
+        doc.page.height = 40.0;
+        doc.page.left = 0.0;
+        doc.page.right = 0.0;
+        doc.page.top = 0.0;
+        doc.page.bottom = 0.0;
+        for p in &mut doc.paragraphs {
+            p.style.line = LineSpacing::Exact(20.0);
+        }
+        let kept = build(&factory, &target, &doc).unwrap();
+        assert_eq!(
+            kept.pages.iter().map(|p| p.lines.len()).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        doc.paragraphs[1].style.widow = false;
+        let split = build(&factory, &target, &doc).unwrap();
+        assert_eq!(
+            split
+                .pages
+                .iter()
+                .map(|p| p.lines.len())
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+    }
+    #[test]
+    fn a_price_and_its_solidus_unit_are_not_split() {
+        let (factory, target) = context();
+        let mut paragraph = paragraph("AAA 50/GB BBB");
+        paragraph.style.alignment = Alignment::Justify;
+        let prefix: Vec<_> = "AAA 50/".encode_utf16().collect();
+        let raw = shaped((&factory, &target), &paragraph, &prefix, 0, 0, 1000.0, 48.0).unwrap();
+        let mut size = DWRITE_TEXT_METRICS::default();
+        unsafe {
+            raw.GetMetrics(&mut size).unwrap();
+        }
+        let result = prepare(
+            &factory,
+            &target,
+            &paragraph,
+            size.width + 0.1,
+            ParagraphSettings {
+                tab_stop: 48.0,
+                index: 0,
+                compress: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.lines[0].text_length, 4);
+    }
+    #[test]
+    fn target_dpi_does_not_change_document_geometry() {
+        let (factory, target) = context();
+        let doc = Document::from_bytes(
+            include_bytes!("../../../tests/fixtures/formatting.docx").to_vec(),
+        )
+        .unwrap();
+        let before = build(&factory, &target, &doc)
+            .unwrap()
+            .report(&doc)
+            .unwrap();
+        unsafe {
+            target.SetDpi(192.0, 192.0);
+        }
+        let after = build(&factory, &target, &doc)
+            .unwrap()
+            .report(&doc)
+            .unwrap();
+        assert_eq!(before, after);
+    }
 }

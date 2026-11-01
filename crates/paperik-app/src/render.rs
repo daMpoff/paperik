@@ -85,6 +85,32 @@ fn matrix(scale: f32, x: f32, y: f32) -> Matrix3x2 {
     }
 }
 
+pub fn draw_page(target: &ID2D1RenderTarget, page: &layout::PageLayout, width: f32) -> Result<()> {
+    // The screen and diagnostic PNGs share this exact drawing path.
+    unsafe {
+        let black = target.CreateSolidColorBrush(&layout::color([0, 0, 0]), None)?;
+        for line in page.lines.iter().chain(page.footer.iter()) {
+            // Italic overhangs may extend beyond the text column; the page is
+            // the horizontal clipping boundary, not the nominal advance box.
+            target.PushAxisAlignedClip(
+                &rect(0.0, line.y, width, line.height),
+                D2D1_ANTIALIAS_MODE_ALIASED,
+            );
+            target.DrawTextLayout(
+                Vector2 {
+                    X: line.x,
+                    Y: line.y - line.source_y,
+                },
+                &line.layout,
+                &black,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+            target.PopAxisAlignedClip();
+        }
+    }
+    Ok(())
+}
+
 impl Renderer {
     pub fn new(handle: *mut core::ffi::c_void, width: u32, height: u32, dpi: f32) -> Result<Self> {
         // SAFETY: called on the owning UI thread with a live HWND.
@@ -521,28 +547,7 @@ impl Renderer {
                 unsafe {
                     self.target.SetTransform(&matrix(v.zoom, x, y));
                 }
-                let black = unsafe {
-                    self.target
-                        .CreateSolidColorBrush(&layout::color([0, 0, 0]), None)?
-                };
-                for line in page.lines.iter().chain(page.footer.iter()) {
-                    unsafe {
-                        self.target.PushAxisAlignedClip(
-                            &rect(line.x - 0.5, line.y, line.width + 1.0, line.height),
-                            D2D1_ANTIALIAS_MODE_ALIASED,
-                        );
-                        self.target.DrawTextLayout(
-                            Vector2 {
-                                X: line.x,
-                                Y: line.y - line.source_y,
-                            },
-                            &line.layout,
-                            &black,
-                            D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        );
-                        self.target.PopAxisAlignedClip();
-                    }
-                }
+                draw_page(&self.target, page, doc.page.width)?;
                 unsafe {
                     self.target.SetTransform(&matrix(1.0, 0.0, 0.0));
                 }

@@ -1,6 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[cfg(target_os = "windows")]
+mod export;
+#[cfg(target_os = "windows")]
 mod layout;
 #[cfg(target_os = "windows")]
 mod render;
@@ -14,6 +16,12 @@ fn main() {
         [argument] if argument == "--smoke-test" => launch(true, None),
         [argument, path] if argument == "--smoke-test" => {
             launch(true, Some(std::path::PathBuf::from(path)))
+        }
+        #[cfg(target_os = "windows")]
+        [argument, path] if argument == "--layout-report" => diagnostic(path, None),
+        #[cfg(target_os = "windows")]
+        [argument, path, directory] if argument == "--render-pages" => {
+            diagnostic(path, Some(directory))
         }
         [argument, path] if argument == "--inspect" => {
             match paperik_document::Document::open(std::path::Path::new(path)) {
@@ -46,7 +54,7 @@ fn main() {
         }
         [argument] if argument == "--help" => {
             println!(
-                "Paperik\n\npaperik.exe файл.docx\n\n--version           Версия приложения\n--smoke-test [файл]  Проверка скрытого окна и отображения\n--inspect файл      Структурная диагностика DOCX\n--help              Эта справка"
+                "Paperik\n\npaperik.exe файл.docx\n\n--version                 Версия приложения\n--smoke-test [файл]        Проверка скрытого окна и отображения\n--inspect файл            Структурная диагностика DOCX\n--layout-report файл      Координаты строк без содержимого\n--render-pages файл папка PNG страниц (144 dpi) в новый каталог\n--help                    Эта справка"
             );
         }
         [path] if !path.to_string_lossy().starts_with('-') => {
@@ -55,6 +63,20 @@ fn main() {
         _ => {
             eprintln!("Неизвестные аргументы. Используйте --help.");
             std::process::exit(2);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn diagnostic(path: &std::ffi::OsStr, directory: Option<&std::ffi::OsString>) {
+    match export::run(
+        std::path::Path::new(path),
+        directory.map(std::path::Path::new),
+    ) {
+        Ok(report) => print!("{report}"),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
         }
     }
 }

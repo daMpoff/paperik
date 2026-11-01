@@ -1,0 +1,18 @@
+{
+  "reference_pages": 9,
+  "rendered_pages": 9,
+  "visible_lines": 237,
+  "reference_visible_lines": 237,
+  "compared_characters": 8186,
+  "text_errors": 0,
+  "missing_characters": 0,
+  "extra_characters": 0,
+  "character_page_errors": 0,
+  "line_break_errors": 0,
+  "character_x_median_pt": 0.08953750000002003,
+  "character_x_p95_pt": 0.22512249999999767,
+  "character_x_max_pt": 0.45394000000004553,
+  "baseline_median_pt": 0.030302500000061627,
+  "baseline_max_pt": 0.1396924999999669,
+  "passed": true
+}

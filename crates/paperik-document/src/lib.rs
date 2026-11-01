@@ -28,6 +28,8 @@ pub struct Font {
     pub italic: bool,
     pub underline: bool,
     pub strike: bool,
+    pub kerning_from: Option<f32>,
+    pub ligatures: u8,
     pub color: [u8; 3],
 }
 impl Default for Font {
@@ -39,6 +41,8 @@ impl Default for Font {
             italic: false,
             underline: false,
             strike: false,
+            kerning_from: None,
+            ligatures: 0,
             color: [0, 0, 0],
         }
     }
@@ -145,6 +149,7 @@ pub struct Document {
     pub warnings: Vec<String>,
     pub tab_stop: f32,
     pub saved_page_count: Option<usize>,
+    pub compress_justification: bool,
 }
 
 fn is(node: Node<'_, '_>, local: &str) -> bool {
@@ -188,6 +193,28 @@ fn font_properties(mut font: Font, properties: Option<Node<'_, '_>>, theme: &str
     }
     if let Some(size) = number(val(properties, "sz")) {
         font.points = size / 2.0;
+    }
+    if let Some(size) = number(val(properties, "kern")) {
+        font.kerning_from = Some(size / 2.0);
+    }
+    if let Some(node) = properties.children().find(|n| {
+        n.tag_name().name() == "ligatures"
+            && n.tag_name().namespace()
+                == Some("http://schemas.microsoft.com/office/word/2010/wordml")
+    }) {
+        let value = node
+            .attributes()
+            .find(|a| a.name() == "val")
+            .map_or("none", |a| a.value());
+        font.ligatures = match value {
+            "standard" => 1,
+            "contextual" => 2,
+            "standardContextual" => 3,
+            "discretionary" => 4,
+            "historical" => 8,
+            "all" => 15,
+            _ => 0,
+        };
     }
     for (name, value) in [
         ("b", &mut font.bold),
@@ -708,6 +735,14 @@ impl Document {
             .and_then(|n| number(attr(n, "val")))
             .unwrap_or(720.0)
             / 15.0;
+        let compress_justification = settings.as_ref().is_some_and(|xml| {
+            xml.descendants().any(|n| {
+                (is(n, "compatSetting")
+                    && attr(n, "name") == Some("compatibilityMode")
+                    && number(attr(n, "val")).is_some_and(|v| v >= 15.0))
+                    || (is(n, "doWordPerfect6ParagraphJustification") && enabled(n))
+            })
+        });
         if paragraphs.len() > 10000 {
             return Err("В документе больше 10000 абзацев".into());
         }
@@ -743,6 +778,7 @@ impl Document {
             None
         };
         Ok(Self {
+            compress_justification,
             package,
             paragraphs,
             footer,

@@ -86,6 +86,46 @@ fn version_is_available_without_opening_the_editor() {
     );
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn page_images_and_geometry_can_be_exported_without_overwriting_files() {
+    let fixture = Fixture::new(include_bytes!("../../../tests/fixtures/formatting.docx"));
+    struct Pages(std::path::PathBuf);
+    impl Drop for Pages {
+        fn drop(&mut self) {
+            for file in ["page-01.png", "page-02.png", "layout.tsv", "glyphs.tsv"] {
+                let _ = std::fs::remove_file(self.0.join(file));
+            }
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+    let pages = Pages(fixture.directory.join("pages"));
+    let output = Command::new(BINARY)
+        .arg("--render-pages")
+        .arg(&fixture.file)
+        .arg(&pages.0)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let image = std::fs::read(pages.0.join("page-02.png")).unwrap();
+    assert_eq!(&image[..8], b"\x89PNG\r\n\x1a\n");
+    let geometry = std::fs::read_to_string(pages.0.join("layout.tsv")).unwrap();
+    assert!(geometry.lines().skip(2).any(|line| line.starts_with("2\t")));
+    assert!(!geometry.contains("Образец"));
+    let retry = Command::new(BINARY)
+        .arg("--render-pages")
+        .arg(&fixture.file)
+        .arg(&pages.0)
+        .output()
+        .unwrap();
+    assert_eq!(retry.status.code(), Some(1));
+    assert_eq!(std::fs::read(pages.0.join("page-02.png")).unwrap(), image);
+}
+
 #[test]
 fn unknown_arguments_are_rejected() {
     let output = Command::new(BINARY)
