@@ -1,0 +1,15 @@
+[package]
+name = "paperik-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Самостоятельный редактор документов Paperik для Windows"
+publish = false
+
+[[bin]]
+name = "paperik"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
