@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 const MAX_FILE: usize = 32 * 1024 * 1024;
@@ -146,6 +146,12 @@ impl Package {
     }
 
     pub fn text(&self, name: &str) -> Result<String, String> {
+        String::from_utf8(self.bytes(name)?).map_err(|_| "XML части не в UTF-8".into())
+    }
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(String::as_str)
+    }
+    pub fn bytes(&self, name: &str) -> Result<Vec<u8>, String> {
         let entry = self
             .entries
             .get(name)
@@ -181,6 +187,89 @@ impl Package {
         if result.len() != entry.unpacked || crc32(&result) != entry.crc {
             return Err("Размер или контрольная сумма части не совпадают".into());
         }
-        String::from_utf8(result).map_err(|_| "XML части не в UTF-8".into())
+        Ok(result)
+    }
+    /// Rebuild only the ZIP directory/headers. Untouched compressed payloads are copied.
+    pub(crate) fn replace(&self, changes: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, String> {
+        if changes.keys().any(|name| !self.contains(name)) {
+            return Err("Нельзя добавить неизвестную часть в пакет".into());
+        }
+        let mut output = Vec::new();
+        let mut central = Vec::new();
+        for (name, entry) in &self.entries {
+            // Validate even opaque binary parts; corrupt data must not be republished silently.
+            let original = self.bytes(name)?;
+            let (encoded, method, crc, unpacked) = if let Some(bytes) = changes.get(name) {
+                if bytes.len() > MAX_PART {
+                    return Err("Изменённая часть DOCX превышает 16 МиБ".into());
+                }
+                let mut encoder =
+                    flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(bytes).map_err(|e| e.to_string())?;
+                (
+                    encoder.finish().map_err(|e| e.to_string())?,
+                    8,
+                    crc32(bytes),
+                    bytes.len(),
+                )
+            } else {
+                let start = entry.offset
+                    + 30
+                    + usize::from(u16_at(&self.original, entry.offset + 26)?)
+                    + usize::from(u16_at(&self.original, entry.offset + 28)?);
+                (
+                    self.original[start..start + entry.packed].to_vec(),
+                    entry.method,
+                    entry.crc,
+                    original.len(),
+                )
+            };
+            let offset = output.len() as u32;
+            output.extend_from_slice(b"PK\x03\x04");
+            output.extend(20u16.to_le_bytes());
+            output.extend(0x0800u16.to_le_bytes());
+            output.extend(method.to_le_bytes());
+            output.extend(0u16.to_le_bytes());
+            output.extend(0x0021u16.to_le_bytes());
+            output.extend(crc.to_le_bytes());
+            output.extend((encoded.len() as u32).to_le_bytes());
+            output.extend((unpacked as u32).to_le_bytes());
+            output.extend((name.len() as u16).to_le_bytes());
+            output.extend(0u16.to_le_bytes());
+            output.extend(name.as_bytes());
+            output.extend(&encoded);
+            central.extend_from_slice(b"PK\x01\x02");
+            central.extend(20u16.to_le_bytes());
+            central.extend(20u16.to_le_bytes());
+            central.extend(0x0800u16.to_le_bytes());
+            central.extend(method.to_le_bytes());
+            central.extend(0u16.to_le_bytes());
+            central.extend(0x0021u16.to_le_bytes());
+            central.extend(crc.to_le_bytes());
+            central.extend((encoded.len() as u32).to_le_bytes());
+            central.extend((unpacked as u32).to_le_bytes());
+            central.extend((name.len() as u16).to_le_bytes());
+            central.extend([0u8; 12]);
+            central.extend(offset.to_le_bytes());
+            central.extend(name.as_bytes());
+            if output.len() + central.len() > MAX_FILE {
+                return Err("Сохранённый пакет превышает 32 МиБ".into());
+            }
+        }
+        let offset = output.len() as u32;
+        let size = central.len() as u32;
+        output.extend(central);
+        output.extend_from_slice(b"PK\x05\x06");
+        output.extend([0u8; 4]);
+        output.extend((self.entries.len() as u16).to_le_bytes());
+        output.extend((self.entries.len() as u16).to_le_bytes());
+        output.extend(size.to_le_bytes());
+        output.extend(offset.to_le_bytes());
+        output.extend(0u16.to_le_bytes());
+        if output.len() > MAX_FILE {
+            return Err("Сохранённый пакет превышает 32 МиБ".into());
+        }
+        Self::parse(output.clone())?;
+        Ok(output)
     }
 }

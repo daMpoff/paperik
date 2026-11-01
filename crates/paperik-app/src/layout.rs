@@ -880,6 +880,7 @@ mod tests {
             runs: vec![Run {
                 text: text.into(),
                 font: font.clone(),
+                source: None,
             }],
             mark_font: font,
             style: ParagraphStyle {
@@ -890,6 +891,8 @@ mod tests {
             list_label: None,
             list: None,
             page_field: false,
+            source: None,
+            edit_block: None,
         }
     }
     #[test]

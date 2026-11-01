@@ -9,3 +9,6 @@ publish = false
 flate2.workspace = true
 roxmltree.workspace = true
 unicode-segmentation.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

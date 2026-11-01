@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "paperik-app"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "paperik-document",
  "roxmltree",
@@ -62,11 +62,12 @@ dependencies = [
 
 [[package]]
 name = "paperik-document"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "roxmltree",
  "unicode-segmentation",
+ "windows-sys",
 ]
 
 [[package]]

@@ -1,6 +1,7 @@
 //! Paperik's document model and bounded DOCX reader. No office engine is used.
 pub mod editor;
 mod package;
+mod save;
 
 pub use package::Package;
 use roxmltree::{Document as Xml, Node};
@@ -101,6 +102,8 @@ impl Default for ParagraphStyle {
 pub struct Run {
     pub text: String,
     pub font: Font,
+    /// Original paragraph/run coordinates; formatting XML stays in the source.
+    pub source: Option<(usize, usize)>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Paragraph {
@@ -111,6 +114,8 @@ pub struct Paragraph {
     pub list_label: Option<String>,
     pub list: Option<ListSpec>,
     pub page_field: bool,
+    pub source: Option<usize>,
+    pub edit_block: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -126,7 +131,7 @@ impl Paragraph {
         self.runs.iter().map(|r| r.text.as_str()).collect()
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Page {
     pub width: f32,
     pub height: f32,
@@ -441,9 +446,10 @@ fn read_paragraphs(
 ) -> Result<Vec<Paragraph>, String> {
     let mut result = Vec::new();
     let mut counters: BTreeMap<(String, String), u32> = BTreeMap::new();
-    for node in xml
+    for (paragraph_index, node) in xml
         .descendants()
         .filter(|n| is(*n, "p") && !n.ancestors().any(|a| is(a, "tbl") || is(a, "txbxContent")))
+        .enumerate()
     {
         let props = child(node, "pPr");
         let style_id = props
@@ -522,7 +528,7 @@ fn read_paragraphs(
         );
         let mut runs = Vec::new();
         let mut page_field = false;
-        for run in node.descendants().filter(|n| is(*n, "r")) {
+        for (run_index, run) in node.descendants().filter(|n| is(*n, "r")).enumerate() {
             let rprops = child(run, "rPr");
             if rprops.and_then(|p| child(p, "vanish")).is_some_and(enabled) {
                 continue;
@@ -558,7 +564,11 @@ fn read_paragraphs(
                 }
             }
             if !text.is_empty() {
-                runs.push(Run { text, font });
+                runs.push(Run {
+                    text,
+                    font,
+                    source: Some((paragraph_index, run_index)),
+                });
             }
         }
         if runs.iter().map(|r| r.text.len()).sum::<usize>() > 200_000 {
@@ -572,6 +582,8 @@ fn read_paragraphs(
             list_label: label,
             list,
             page_field,
+            source: Some(paragraph_index),
+            edit_block: save::edit_block(node),
         });
     }
     Ok(result)

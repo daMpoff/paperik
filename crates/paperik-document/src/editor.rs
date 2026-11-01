@@ -63,6 +63,7 @@ pub struct Editor {
     generation: u64,
     revision: u64,
     next_revision: u64,
+    saved_revision: u64,
 }
 
 pub fn utf16_len(text: &str) -> u32 {
@@ -137,27 +138,29 @@ fn slice_runs(paragraph: &Paragraph, start: u32, end: u32) -> Vec<Run> {
             result.push(Run {
                 text: run.text[byte_at(&run.text, a)..byte_at(&run.text, b)].into(),
                 font: run.font.clone(),
+                source: run.source,
             });
         }
         offset += length;
     }
     result
 }
-fn insertion_font(paragraph: &Paragraph, offset: u32) -> Font {
+fn insertion_font(paragraph: &Paragraph, offset: u32) -> (Font, Option<(usize, usize)>) {
     let mut end = 0;
     for run in &paragraph.runs {
         end += utf16_len(&run.text);
         if offset <= end && !run.text.is_empty() {
-            return run.font.clone();
+            return (run.font.clone(), run.source);
         }
     }
-    paragraph.mark_font.clone()
+    (paragraph.mark_font.clone(), None)
 }
 fn compact(runs: Vec<Run>) -> Vec<Run> {
     let mut result: Vec<Run> = Vec::new();
     for run in runs.into_iter().filter(|r| !r.text.is_empty()) {
         if let Some(last) = result.last_mut()
             && last.font == run.font
+            && last.source == run.source
         {
             last.text.push_str(&run.text);
         } else {
@@ -239,6 +242,8 @@ impl Editor {
                 list_label: None,
                 list: None,
                 page_field: false,
+                source: None,
+                edit_block: None,
             });
         }
         Self {
@@ -249,6 +254,7 @@ impl Editor {
             generation: 0,
             revision: 0,
             next_revision: 1,
+            saved_revision: 0,
         }
     }
     pub fn document(&self) -> &Document {
@@ -258,7 +264,10 @@ impl Editor {
         self.selection
     }
     pub fn dirty(&self) -> bool {
-        self.revision != 0
+        self.revision != self.saved_revision
+    }
+    pub fn mark_saved(&mut self) {
+        self.saved_revision = self.revision;
     }
     pub fn end(&self) -> Position {
         let index = self.document.paragraphs.len().saturating_sub(1);
@@ -404,9 +413,9 @@ impl Editor {
             Edit::Undo | Edit::Redo => unreachable!(),
         };
         if input.len() > MAX_TEXT
-            || input
-                .chars()
-                .any(|c| c.is_control() && c != '\n' && c != '\t')
+            || input.chars().any(|c| {
+                (c.is_control() && c != '\n' && c != '\t') || matches!(c, '\u{fffe}' | '\u{ffff}')
+            })
         {
             return Err(
                 "Вставка слишком велика или содержит неподдерживаемые управляющие символы".into(),
@@ -432,10 +441,16 @@ impl Editor {
         {
             return Err("Редактирование полей документа пока не поддерживается".into());
         }
+        if let Some(reason) = self.document.paragraphs[start.paragraph..=end.paragraph]
+            .iter()
+            .find_map(|p| p.edit_block)
+        {
+            return Err(format!("Этот абзац доступен только для чтения: {reason}"));
+        }
         let mut document = self.document.clone();
         let first = &self.document.paragraphs[start.paragraph];
         let last = &self.document.paragraphs[end.paragraph];
-        let font = insertion_font(first, start.offset);
+        let (font, source) = insertion_font(first, start.offset);
         let before = slice_runs(first, 0, start.offset);
         let after = slice_runs(last, end.offset, utf16_len(&last.text()));
         let chunks: Vec<&str> = if soft {
@@ -458,6 +473,7 @@ impl Editor {
             paragraph.runs.push(Run {
                 text: (*text).into(),
                 font: font.clone(),
+                source,
             });
             if index + 1 == chunks.len() {
                 focus = Position {
@@ -619,6 +635,7 @@ mod tests {
             Run {
                 text: "abc".into(),
                 font: Font::default(),
+                source: None,
             },
             Run {
                 text: "def".into(),
@@ -626,6 +643,7 @@ mod tests {
                     italic: true,
                     ..Font::default()
                 },
+                source: None,
             },
         ];
         let before = e.document.paragraphs.clone();

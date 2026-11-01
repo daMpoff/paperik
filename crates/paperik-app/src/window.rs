@@ -27,6 +27,7 @@ struct State {
     editor: Option<Editor>,
     layout: Option<Layout>,
     filename: String,
+    file_path: Option<PathBuf>,
     message: String,
     width: f32,
     height: f32,
@@ -49,6 +50,7 @@ impl State {
             editor: None,
             layout: None,
             filename: String::new(),
+            file_path: None,
             message: String::new(),
             width: 1320.0,
             height: 820.0,
@@ -97,6 +99,7 @@ impl State {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
+        self.file_path = Some(path);
         self.zoom = render::fit_zoom(self.width, self.height, document);
         self.scroll = 0.0;
         self.editor = Some(editor);
@@ -105,6 +108,20 @@ impl State {
         self.upstream = false;
         self.preferred_x = None;
         self.input.clear();
+        Ok(())
+    }
+    fn save_to(&mut self, path: PathBuf) -> Result<(), String> {
+        let editor = self.editor.as_mut().ok_or("Сначала откройте документ")?;
+        let count = self.layout.as_ref().map(|l| l.pages.len());
+        editor.document().save_new(&path, count)?;
+        editor.mark_saved();
+        self.filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        self.file_path = Some(path);
+        self.message = "Копия сохранена. Исходный документ не изменён.".into();
         Ok(())
     }
     fn apply(&mut self, edit: Edit) -> Result<(), String> {
@@ -443,15 +460,103 @@ unsafe fn discard_allowed(window: HWND) -> bool {
     unsafe {
         let pointer = state_pointer(window);
         let dirty = !pointer.is_null() && (&*pointer).editor.as_ref().is_some_and(Editor::dirty);
-        !dirty
-            || MessageBoxW(
+        if !dirty {
+            return true;
+        }
+        match MessageBoxW(
+            window,
+            windows_sys::w!(
+                "В документе есть несохранённые изменения.\n\nСохранить их в новую копию DOCX перед продолжением?"
+            ),
+            windows_sys::w!("Paperik — несохранённые изменения"),
+            MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON3,
+        ) {
+            IDYES => save_copy(window),
+            IDNO => true,
+            _ => false,
+        }
+    }
+}
+
+fn save_dialog(window: HWND, suggested: &std::path::Path) -> Result<Option<PathBuf>, String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let units: Vec<_> = suggested.as_os_str().encode_wide().collect();
+    if units.len() >= 32767 {
+        return Err("Слишком длинный путь для диалога сохранения".into());
+    }
+    let mut buffer = vec![0u16; 32768];
+    buffer[..units.len()].copy_from_slice(&units);
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: window,
+        lpstrTitle: windows_sys::w!(
+            "Сохранить новую копию DOCX — существующие файлы не заменяются"
+        ),
+        lpstrFilter: windows_sys::w!("Документы Word (*.docx)\0*.docx\0\0"),
+        lpstrDefExt: windows_sys::w!("docx"),
+        lpstrFile: buffer.as_mut_ptr(),
+        nMaxFile: buffer.len() as u32,
+        Flags: OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_NOREADONLYRETURN,
+        ..Default::default()
+    };
+    unsafe {
+        if GetSaveFileNameW(&mut dialog) != 0 {
+            let end = buffer.iter().position(|u| *u == 0).unwrap_or(buffer.len());
+            Ok(Some(PathBuf::from(std::ffi::OsString::from_wide(
+                &buffer[..end],
+            ))))
+        } else {
+            let code = CommDlgExtendedError();
+            if code == 0 {
+                Ok(None)
+            } else {
+                Err(format!("Не удалось открыть диалог сохранения: {code:#x}"))
+            }
+        }
+    }
+}
+unsafe fn save_copy(window: HWND) -> bool {
+    unsafe {
+        let pointer = state_pointer(window);
+        if pointer.is_null() || (&*pointer).editor.is_none() {
+            return false;
+        }
+        // All values owned here: the modal dialog is allowed to pump window messages.
+        let current = (&*pointer)
+            .file_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("Документ.docx"));
+        let stem = current
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let parent = current.parent().unwrap_or(std::path::Path::new("."));
+        let mut suggested = parent.join(format!("{stem} — копия.docx"));
+        for index in 2..10000 {
+            if !suggested.exists() {
+                break;
+            }
+            suggested = parent.join(format!("{stem} — копия {index}.docx"));
+        }
+        let result = match save_dialog(window, &suggested) {
+            Ok(Some(path)) => (&mut *pointer).save_to(path),
+            Ok(None) => return false,
+            Err(error) => Err(error),
+        };
+        let success = result.is_ok();
+        if let Err(error) = result {
+            (&mut *pointer).message = error.clone();
+            let text: Vec<_> = error.encode_utf16().chain(Some(0)).collect();
+            MessageBoxW(
                 window,
-                windows_sys::w!(
-                    "Изменения хранятся только в памяти. Сохранение DOCX пока не реализовано.\n\nПродолжить и потерять эти изменения?"
-                ),
-                windows_sys::w!("Paperik — несохранённые изменения"),
-                MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2,
-            ) == IDOK
+                text.as_ptr(),
+                windows_sys::w!("Paperik — копия не сохранена"),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+        refresh(window, false);
+        success
     }
 }
 unsafe fn sync_caret(window: HWND) {
@@ -795,9 +900,7 @@ unsafe extern "system" fn procedure(
                     return 0;
                 }
                 if ctrl && wparam == b'S' as usize {
-                    (&mut *pointer).message =
-                        "Сохранение DOCX пока не реализовано. Правки остаются в памяти.".into();
-                    refresh(window, false);
+                    save_copy(window);
                     return 0;
                 }
                 if wparam == VK_BACK as usize || wparam == VK_DELETE as usize {
@@ -1016,6 +1119,11 @@ unsafe extern "system" fn procedure(
                 let state = &*pointer;
                 let x = (lparam as u16 as i16) as f32 * 96.0 / state.dpi;
                 let y = ((lparam >> 16) as u16 as i16) as f32 * 96.0 / state.dpi;
+                if (14.0..50.0).contains(&y) && x >= state.width - 404.0 && x <= state.width - 256.0
+                {
+                    save_copy(window);
+                    return 0;
+                }
                 if (14.0..50.0).contains(&y) && x >= state.width - 228.0 && x <= state.width - 96.0
                 {
                     if let Some(path) = open_dialog(window) {
@@ -1139,6 +1247,33 @@ mod tests {
                 .unwrap()
                 .paint(&state.view())
                 .unwrap();
+            let geometry = state
+                .layout
+                .as_ref()
+                .unwrap()
+                .report(state.editor.as_ref().unwrap().document())
+                .unwrap();
+            let directory =
+                std::env::temp_dir().join(format!("paperik-window-save-{}", std::process::id()));
+            std::fs::create_dir(&directory).unwrap();
+            let copy = directory.join("edited.docx");
+            state.save_to(copy.clone()).unwrap();
+            assert!(!state.editor.as_ref().unwrap().dirty());
+            let reopened = Document::open(&copy).unwrap();
+            let layout = state
+                .renderer
+                .as_ref()
+                .unwrap()
+                .document(&reopened)
+                .unwrap();
+            assert_eq!(geometry, layout.report(&reopened).unwrap());
+            state.apply(Edit::Insert("extra".into())).unwrap();
+            assert!(state.save_to(copy.clone()).is_err());
+            assert!(state.editor.as_ref().unwrap().dirty());
+            state.apply(Edit::Undo).unwrap();
+            assert!(!state.editor.as_ref().unwrap().dirty());
+            std::fs::remove_file(copy).unwrap();
+            std::fs::remove_dir(directory).unwrap();
             assert_eq!(std::fs::read(&fixture).unwrap(), source);
             drop(window);
         }

@@ -293,6 +293,25 @@ impl Renderer {
             },
         )?;
         self.rounded(rect(v.width - 228.0, 14.0, 132.0, 36.0), rgb("forest"))?;
+        self.rounded(
+            rect(v.width - 404.0, 14.0, 148.0, 36.0),
+            if v.document.is_some() {
+                rgb("sage")
+            } else {
+                panel
+            },
+        )?;
+        self.text(
+            "Сохранить копию",
+            v.width - 393.0,
+            23.0,
+            130.0,
+            TextStyle {
+                size: 13.0,
+                color: if v.document.is_some() { ink } else { muted },
+                bold: false,
+            },
+        )?;
         self.text(
             "Открыть DOCX",
             v.width - 215.0,
@@ -431,7 +450,11 @@ impl Renderer {
         )?;
         if right - left > 500.0 {
             self.text(
-                "Правки в памяти",
+                if v.dirty {
+                    "Есть изменения"
+                } else {
+                    "Без изменений"
+                },
                 right - 140.0,
                 116.0,
                 130.0,
@@ -519,7 +542,7 @@ impl Renderer {
                     )?;
                 }
             }
-            self.text("DOCX пока не сохраняется\nCtrl+Z / Ctrl+Y — отмена / повтор\nCtrl+C / X / V — буфер обмена\nShift+стрелки — выделение\nCtrl+колесо — масштаб\nCtrl+O — открыть", right+20.0, bottom-150.0, 240.0, TextStyle { size: 12.0, color: muted, bold: false })?;
+            self.text("Ctrl+S — сохранить новую копию\nCtrl+Z / Ctrl+Y — отмена / повтор\nCtrl+C / X / V — буфер обмена\nShift+стрелки — выделение\nCtrl+колесо — масштаб\nCtrl+O — открыть", right+20.0, bottom-150.0, 240.0, TextStyle { size: 12.0, color: muted, bold: false })?;
         }
         // Clip both pages and document text to the central workspace.
         unsafe {
@@ -597,9 +620,9 @@ impl Renderer {
                         "Страница {page} из {} · {}",
                         layout.pages.len(),
                         if v.dirty {
-                            "Правки только в памяти"
+                            "Есть несохранённые правки"
                         } else {
-                            "Исходник не изменён"
+                            "Нет несохранённых правок"
                         }
                     )
                 },

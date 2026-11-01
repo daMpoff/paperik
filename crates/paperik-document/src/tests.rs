@@ -1,7 +1,7 @@
 use super::*;
 use std::io::Write;
 
-fn fixture_parts() -> Vec<(String, String)> {
+pub(crate) fn fixture_parts() -> Vec<(String, String)> {
     vec![
         ("[Content_Types].xml".into(),r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#.into()),
         ("_rels/.rels".into(),r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.into()),
@@ -11,7 +11,7 @@ fn fixture_parts() -> Vec<(String, String)> {
     ]
 }
 
-fn archive(parts: &[(String, String)], compressed: bool) -> Vec<u8> {
+pub(crate) fn archive(parts: &[(String, String)], compressed: bool) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut directory = Vec::new();
     for (name, text) in parts {
