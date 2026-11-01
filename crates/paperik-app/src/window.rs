@@ -1,5 +1,6 @@
 use crate::{
     layout::Layout,
+    recovery::{self, Autosave, Recovered},
     render::{self, Renderer, View},
 };
 use paperik_document::Document;
@@ -35,6 +36,12 @@ struct State {
     zoom: f32,
     scroll: f32,
     dark: bool,
+    recovery_root: Option<PathBuf>,
+    autosave: Option<Autosave>,
+    autosave_status: &'static str,
+    autosave_error: Option<String>,
+    confirmed_stamp: Option<u64>,
+    last_attempt: std::time::Instant,
     focused: bool,
     dragging: bool,
     drag_point: (f32, f32),
@@ -58,6 +65,12 @@ impl State {
             zoom: 1.0,
             scroll: 0.0,
             dark: false,
+            recovery_root: None,
+            autosave: None,
+            autosave_status: "",
+            autosave_error: None,
+            confirmed_stamp: None,
+            last_attempt: std::time::Instant::now(),
             focused: false,
             dragging: false,
             drag_point: (0.0, 0.0),
@@ -80,6 +93,8 @@ impl State {
             message: &self.message,
             selection: self.editor.as_ref().map(Editor::selection),
             dirty: self.editor.as_ref().is_some_and(Editor::dirty),
+            autosave_status: self.autosave_status,
+            recovery_enabled: self.recovery_root.is_some(),
         }
     }
     fn clamp(&mut self) {
@@ -94,6 +109,7 @@ impl State {
             .ok_or("Рендерер недоступен")?
             .document(document)
             .map_err(|e| format!("Не удалось выполнить вёрстку: {e}"))?;
+        self.finish_autosave();
         self.filename = path
             .file_name()
             .unwrap_or_default()
@@ -108,6 +124,129 @@ impl State {
         self.upstream = false;
         self.preferred_x = None;
         self.input.clear();
+        self.start_autosave();
+        Ok(())
+    }
+    fn start_autosave(&mut self) {
+        if self.recovery_root.is_none() {
+            self.update_autosave_status();
+            return;
+        }
+        self.confirmed_stamp = None;
+        self.autosave_error = None;
+        self.last_attempt = std::time::Instant::now();
+        if let Some(root) = &self.recovery_root {
+            match Autosave::new(root) {
+                Ok(autosave) => {
+                    self.autosave = Some(autosave);
+                    self.autosave_status = "Автосохранение включено";
+                }
+                Err(error) => {
+                    self.autosave_error = Some(error.clone());
+                    self.message = format!("Автосохранение недоступно: {error}");
+                    self.autosave_status = "Ошибка автосохранения";
+                }
+            }
+        }
+    }
+    fn finish_autosave(&mut self) {
+        if let Some(autosave) = self.autosave.take()
+            && let Err(error) = autosave.finish()
+        {
+            self.message = format!("Черновик не закрыт: {error}");
+        }
+    }
+    fn clear_autosave(&mut self) {
+        self.confirmed_stamp = None;
+        if let Some(autosave) = &mut self.autosave {
+            if let Err(error) = autosave.clean() {
+                self.autosave_error = Some(error.clone());
+                self.message = format!("Не удалось завершить черновик: {error}");
+            } else {
+                self.autosave_error = None;
+            }
+        }
+        self.update_autosave_status();
+    }
+    fn update_autosave_status(&mut self) {
+        self.autosave_status = if self.autosave_error.is_some() {
+            "Ошибка автосохранения"
+        } else if let (Some(editor), Some(autosave)) = (&self.editor, &self.autosave) {
+            if autosave.busy {
+                "Автосохранение…"
+            } else if !editor.dirty() {
+                "Автосохранение включено"
+            } else if self.confirmed_stamp == Some(editor.checkpoint_stamp()) {
+                "Черновик сохранён"
+            } else {
+                "Автосохранение ожидается"
+            }
+        } else {
+            ""
+        };
+    }
+    fn autosave_tick(&mut self, force: bool) -> bool {
+        let previous = self.autosave_status;
+        if let Some(autosave) = &mut self.autosave {
+            for event in autosave.poll() {
+                match event.result {
+                    Ok(()) => {
+                        self.confirmed_stamp = Some(event.stamp);
+                        self.autosave_error = None;
+                    }
+                    Err(error) => {
+                        self.confirmed_stamp = None;
+                        self.message = format!("Не удалось сохранить черновик: {error}");
+                        self.autosave_error = Some(error);
+                    }
+                }
+            }
+            if let Some(editor) = &self.editor
+                && editor.dirty()
+                && self.confirmed_stamp != Some(editor.checkpoint_stamp())
+                && !autosave.busy
+                && (force || self.last_attempt.elapsed() >= std::time::Duration::from_secs(5))
+            {
+                self.last_attempt = std::time::Instant::now();
+                if let Err(error) = autosave.queue(editor, &self.filename) {
+                    self.autosave_error = Some(error.clone());
+                    self.message = format!("Автосохранение недоступно: {error}");
+                }
+            }
+        }
+        self.update_autosave_status();
+        self.autosave_status != previous
+    }
+    fn restore(&mut self, recovered: Recovered) -> Result<(), String> {
+        let layout = self
+            .renderer
+            .as_ref()
+            .ok_or("Рендерер недоступен")?
+            .document(recovered.editor.document())
+            .map_err(|e| e.to_string())?;
+        let autosave = Autosave::resume(recovered.session)?;
+        self.finish_autosave();
+        self.zoom = render::fit_zoom(self.width, self.height, recovered.editor.document());
+        self.scroll = 0.0;
+        self.confirmed_stamp = Some(recovered.editor.checkpoint_stamp());
+        self.editor = Some(recovered.editor);
+        self.layout = Some(layout);
+        self.filename = recovered.name;
+        self.file_path = None;
+        self.autosave = Some(autosave);
+        self.autosave_error = None;
+        self.last_attempt = std::time::Instant::now();
+        self.upstream = false;
+        self.preferred_x = None;
+        self.input.clear();
+        self.message = if recovered.previous_generation {
+            "Восстановлен предыдущий исправный снимок сессии."
+        } else {
+            "Несохранённая сессия восстановлена. Сохраните копию DOCX."
+        }
+        .into();
+        self.update_autosave_status();
+        self.reveal();
         Ok(())
     }
     fn save_to(&mut self, path: PathBuf) -> Result<(), String> {
@@ -122,9 +261,11 @@ impl State {
             .into_owned();
         self.file_path = Some(path);
         self.message = "Копия сохранена. Исходный документ не изменён.".into();
+        self.clear_autosave();
         Ok(())
     }
     fn apply(&mut self, edit: Edit) -> Result<(), String> {
+        let was_dirty = self.editor.as_ref().is_some_and(Editor::dirty);
         let Some(editor) = &mut self.editor else {
             return Ok(());
         };
@@ -143,6 +284,14 @@ impl State {
             self.preferred_x = None;
         }
         self.message.clear();
+        let dirty = self.editor.as_ref().is_some_and(Editor::dirty);
+        if was_dirty && !dirty {
+            self.clear_autosave();
+        }
+        if !was_dirty && dirty {
+            self.last_attempt = std::time::Instant::now();
+        }
+        self.update_autosave_status();
         self.reveal();
         Ok(())
     }
@@ -316,6 +465,16 @@ pub fn run(smoke_test: bool, path: Option<PathBuf>) -> Result<(), String> {
         let _class = Class(instance);
         let dpi = GetDpiForSystem().max(96) as f32;
         let mut state = Box::new(State::empty(dpi));
+        if !smoke_test {
+            match recovery::default_root() {
+                Ok(root) => state.recovery_root = Some(root),
+                Err(error) => {
+                    state.message = format!("Автосохранение недоступно: {error}");
+                    state.autosave_error = Some(error);
+                    state.autosave_status = "Ошибка автосохранения";
+                }
+            }
+        }
         let mut bounds = RECT {
             left: 0,
             top: 0,
@@ -390,6 +549,8 @@ pub fn run(smoke_test: bool, path: Option<PathBuf>) -> Result<(), String> {
         } else {
             ShowWindow(handle, SW_SHOW);
             UpdateWindow(handle);
+            SetTimer(handle, 2, 500, None);
+            restore_session(handle, true);
         }
         let mut message = MSG::default();
         loop {
@@ -478,6 +639,64 @@ unsafe fn discard_allowed(window: HWND) -> bool {
     }
 }
 
+unsafe fn restore_session(window: HWND, startup: bool) {
+    unsafe {
+        let pointer = state_pointer(window);
+        if pointer.is_null() {
+            return;
+        }
+        let Some(root) = (&*pointer).recovery_root.clone() else {
+            return;
+        };
+        let mut skip = std::collections::BTreeSet::new();
+        loop {
+            let candidate = match recovery::find(&root, &skip) {
+                Ok(Some(candidate)) => candidate,
+                Ok(None) => {
+                    if !startup {
+                        (&mut *pointer).message =
+                            "Несохранённых сессий для восстановления нет.".into();
+                        refresh(window, false);
+                    }
+                    return;
+                }
+                Err(error) => {
+                    (&mut *pointer).message = error;
+                    refresh(window, false);
+                    return;
+                }
+            };
+            let text = format!(
+                "Найдена несохранённая сессия: {}\n\nВосстановить текст, оформление и Undo/Redo?\n\nДа — восстановить. Нет — показать более раннюю сессию.\nОтмена — оставить на потом, через кнопку «Восстановить сессию».",
+                candidate.name
+            );
+            let wide: Vec<_> = text.encode_utf16().chain(Some(0)).collect();
+            match MessageBoxW(
+                window,
+                wide.as_ptr(),
+                windows_sys::w!("Paperik — восстановление сессии"),
+                MB_YESNOCANCEL | MB_ICONQUESTION,
+            ) {
+                IDYES => {
+                    if !discard_allowed(window) {
+                        return;
+                    }
+                    if let Err(error) = (&mut *pointer).restore(candidate) {
+                        (&mut *pointer).message =
+                            format!("Не удалось восстановить сессию: {error}");
+                    }
+                    refresh(window, true);
+                    return;
+                }
+                IDNO => {
+                    skip.insert(candidate.path().to_owned());
+                }
+                _ => return,
+            }
+        }
+    }
+}
+
 fn save_dialog(window: HWND, suggested: &std::path::Path) -> Result<Option<PathBuf>, String> {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     let units: Vec<_> = suggested.as_os_str().encode_wide().collect();
@@ -525,7 +744,7 @@ unsafe fn save_copy(window: HWND) -> bool {
         let current = (&*pointer)
             .file_path
             .clone()
-            .unwrap_or_else(|| PathBuf::from("Документ.docx"));
+            .unwrap_or_else(|| PathBuf::from((&*pointer).filename.clone()));
         let stem = current
             .file_stem()
             .unwrap_or_default()
@@ -722,6 +941,10 @@ unsafe extern "system" fn procedure(
         match message {
             WM_CLOSE => {
                 if discard_allowed(window) {
+                    if !pointer.is_null() {
+                        (&mut *pointer).finish_autosave();
+                    }
+                    KillTimer(window, 2);
                     DestroyWindow(window);
                 }
                 0
@@ -738,6 +961,7 @@ unsafe extern "system" fn procedure(
                 0
             }
             WM_DESTROY => {
+                KillTimer(window, 2);
                 PostQuitMessage(0);
                 0
             }
@@ -1086,6 +1310,18 @@ unsafe extern "system" fn procedure(
                 drag(window);
                 0
             }
+            WM_TIMER if wparam == 2 && !pointer.is_null() => {
+                if (&mut *pointer).autosave_tick(false) {
+                    InvalidateRect(window, null(), 0);
+                }
+                0
+            }
+            WM_ACTIVATEAPP if wparam == 0 && !pointer.is_null() => {
+                if (&mut *pointer).autosave_tick(true) {
+                    InvalidateRect(window, null(), 0);
+                }
+                DefWindowProcW(window, message, wparam, lparam)
+            }
             WM_CAPTURECHANGED if !pointer.is_null() => {
                 (&mut *pointer).dragging = false;
                 KillTimer(window, 1);
@@ -1119,6 +1355,11 @@ unsafe extern "system" fn procedure(
                 let state = &*pointer;
                 let x = (lparam as u16 as i16) as f32 * 96.0 / state.dpi;
                 let y = ((lparam >> 16) as u16 as i16) as f32 * 96.0 / state.dpi;
+                let (left, _, _, _) = render::panes(state.width, state.height);
+                if x >= 12.0 && x < left - 12.0 && (221.0..257.0).contains(&y) {
+                    restore_session(window, false);
+                    return 0;
+                }
                 if (14.0..50.0).contains(&y) && x >= state.width - 404.0 && x <= state.width - 256.0
                 {
                     save_copy(window);
@@ -1144,13 +1385,13 @@ unsafe extern "system" fn procedure(
                     }
                 }
                 if x < left
-                    && y >= 273.0
+                    && y >= 317.0
                     && y < bottom
                     && let (Some(editor), Some(layout)) = (&state.editor, &state.layout)
                 {
                     let doc = editor.document();
                     let current = (state.scroll / (doc.page.height + 24.0)).floor() as usize;
-                    let index = current.saturating_sub(2) + ((y - 273.0) / 34.0) as usize;
+                    let index = current.saturating_sub(2) + ((y - 317.0) / 34.0) as usize;
                     if index < layout.pages.len() {
                         state.scroll = index as f32 * (doc.page.height + 24.0);
                     }
@@ -1206,6 +1447,10 @@ mod tests {
             state.renderer = Some(Renderer::new(handle, 1320, 820, 96.0).unwrap());
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../tests/fixtures/formatting.docx");
+            let recovery_root = std::env::temp_dir()
+                .join(format!("paperik-window-recovery-{}", std::process::id()));
+            std::fs::create_dir(&recovery_root).unwrap();
+            state.recovery_root = Some(recovery_root.clone());
             state.load(fixture.clone()).unwrap();
             let source = std::fs::read(&fixture).unwrap();
             let paragraphs = state.editor.as_ref().unwrap().document().paragraphs.clone();
@@ -1253,6 +1498,27 @@ mod tests {
                 .unwrap()
                 .report(state.editor.as_ref().unwrap().document())
                 .unwrap();
+            state.autosave_tick(false);
+            assert!(!state.autosave.as_ref().unwrap().busy);
+            state.last_attempt = std::time::Instant::now() - std::time::Duration::from_secs(6);
+            procedure(handle, WM_TIMER, 2, 0);
+            assert!(state.autosave.as_ref().unwrap().busy);
+            // Disconnecting the worker retains the draft, as an interrupted window would.
+            drop(state.autosave.take());
+            let recovered = recovery::find(&recovery_root, &std::collections::BTreeSet::new())
+                .unwrap()
+                .unwrap();
+            state.restore(recovered).unwrap();
+            assert_eq!(
+                geometry,
+                state
+                    .layout
+                    .as_ref()
+                    .unwrap()
+                    .report(state.editor.as_ref().unwrap().document())
+                    .unwrap()
+            );
+            assert!(state.editor.as_ref().unwrap().dirty());
             let directory =
                 std::env::temp_dir().join(format!("paperik-window-save-{}", std::process::id()));
             std::fs::create_dir(&directory).unwrap();
@@ -1274,6 +1540,13 @@ mod tests {
             assert!(!state.editor.as_ref().unwrap().dirty());
             std::fs::remove_file(copy).unwrap();
             std::fs::remove_dir(directory).unwrap();
+            state.finish_autosave();
+            assert!(
+                recovery::find(&recovery_root, &std::collections::BTreeSet::new())
+                    .unwrap()
+                    .is_none()
+            );
+            std::fs::remove_dir(recovery_root).unwrap();
             assert_eq!(std::fs::read(&fixture).unwrap(), source);
             drop(window);
         }

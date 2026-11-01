@@ -2,6 +2,7 @@
 use crate::{Document, Font, Paragraph, Run};
 use std::collections::{BTreeMap, VecDeque};
 use unicode_segmentation::UnicodeSegmentation;
+mod recovery;
 
 const MAX_TEXT: usize = 16 * 1024 * 1024;
 const MAX_PARAGRAPH: usize = 200_000;
@@ -55,6 +56,7 @@ pub struct PendingChange {
     revision: u64,
     kind: ChangeKind,
 }
+#[derive(Clone)]
 pub struct Editor {
     document: Document,
     selection: Selection,
@@ -265,6 +267,12 @@ impl Editor {
     }
     pub fn dirty(&self) -> bool {
         self.revision != self.saved_revision
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn checkpoint_stamp(&self) -> u64 {
+        self.generation
     }
     pub fn mark_saved(&mut self) {
         self.saved_revision = self.revision;

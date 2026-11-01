@@ -514,7 +514,9 @@ fn read_paragraphs(
                             text.into()
                         }
                     });
-                    *count += 1;
+                    *count = count
+                        .checked_add(1)
+                        .ok_or("Нумерация превышает поддерживаемый диапазон")?;
                 } else {
                     warnings.insert("Не найдены параметры списка".into());
                 }

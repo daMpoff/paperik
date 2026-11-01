@@ -27,7 +27,7 @@ pwsh -NoProfile -File scripts/build.ps1 -Configuration Release -Check -Package
 
 Проверка `-Check` выполняет форматирование, Clippy со всеми целями и запретом предупреждений, затем интеграционные тесты. Поставка создаётся только после успешного запуска с PATH, содержащим только System32.
 
-Исполняемый файл находится в `target/x86_64-pc-windows-gnullvm/release/paperik.exe`. Архив с уведомлениями — в `dist/paperik-0.4.0-windows-x64.zip`, рядом SHA-256. Для запуска следует распаковать весь архив и открыть exe; Rust, Cargo и Ollama для этого прототипа не требуются.
+Исполняемый файл находится в `target/x86_64-pc-windows-gnullvm/release/paperik.exe`. Архив с уведомлениями — в `dist/paperik-0.5.0-windows-x64.zip`, рядом SHA-256. Для запуска следует распаковать весь архив и открыть exe; Rust, Cargo и Ollama для этого прототипа не требуются.
 
 ## Что умеет эта сборка
 
@@ -36,8 +36,10 @@ pwsh -NoProfile -File scripts/build.ps1 -Configuration Release -Check -Package
 Проверить поставку с документом:
 
 ```powershell
-pwsh -NoProfile -File scripts/test-standalone.ps1 -ExecutablePath dist/paperik-0.4.0-windows-x64/paperik.exe -DocumentPath tests/fixtures/formatting.docx
+pwsh -NoProfile -File scripts/test-standalone.ps1 -ExecutablePath dist/paperik-0.5.0-windows-x64/paperik.exe -DocumentPath tests/fixtures/formatting.docx
 ```
+
+При обычном запуске черновики хранятся в `%LOCALAPPDATA%\Paperik\Recovery`, отдельно от исходников и portable-папки. `--smoke-test` и диагностика не сканируют пользовательские сессии. [Автосохранение и восстановление](recovery.md).
 
 ## Границы проверки
 

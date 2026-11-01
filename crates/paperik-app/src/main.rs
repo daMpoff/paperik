@@ -7,6 +7,8 @@ mod export;
 #[cfg(target_os = "windows")]
 mod layout;
 #[cfg(target_os = "windows")]
+mod recovery;
+#[cfg(target_os = "windows")]
 mod render;
 #[cfg(target_os = "windows")]
 mod text_input;

@@ -19,6 +19,7 @@
 *.jpeg
 *.log
 *.tmp
+*.pkr
 __pycache__/
 *.pyc
 ~$*

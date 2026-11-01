@@ -37,6 +37,8 @@ pub struct View<'a> {
     pub message: &'a str,
     pub selection: Option<Selection>,
     pub dirty: bool,
+    pub autosave_status: &'a str,
+    pub recovery_enabled: bool,
 }
 
 pub fn panes(width: f32, height: f32) -> (f32, f32, f32, f32) {
@@ -389,10 +391,29 @@ impl Renderer {
                 },
             )?;
         }
+        self.rounded(
+            rect(12.0, 221.0, left - 24.0, 36.0),
+            if v.recovery_enabled {
+                rgb("sage")
+            } else {
+                panel
+            },
+        )?;
+        self.text(
+            "Восстановить сессию",
+            22.0,
+            231.0,
+            left - 44.0,
+            TextStyle {
+                size: 12.0,
+                color: if v.recovery_enabled { ink } else { muted },
+                bold: false,
+            },
+        )?;
         self.text(
             "СТРАНИЦЫ",
             20.0,
-            242.0,
+            286.0,
             left - 40.0,
             TextStyle {
                 size: 12.0,
@@ -403,9 +424,9 @@ impl Renderer {
         if let (Some(doc), Some(layout)) = (v.document, v.layout) {
             let current = (v.scroll / (doc.page.height + 24.0)).floor() as usize;
             let first = current.saturating_sub(2);
-            let available = ((bottom - 290.0) / 34.0).max(1.0) as usize;
+            let available = ((bottom - 334.0) / 34.0).max(1.0) as usize;
             for index in first..layout.pages.len().min(first + available) {
-                let y = 276.0 + (index - first) as f32 * 34.0;
+                let y = 320.0 + (index - first) as f32 * 34.0;
                 if index == current {
                     self.fill(rect(16.0, y - 3.0, 2.0, 28.0), rgb("forest"))?;
                 }
@@ -485,6 +506,17 @@ impl Renderer {
                 240.0,
                 TextStyle {
                     size: 14.0,
+                    color: muted,
+                    bold: false,
+                },
+            )?;
+            self.text(
+                v.autosave_status,
+                right + 20.0,
+                180.0,
+                240.0,
+                TextStyle {
+                    size: 12.0,
                     color: muted,
                     bold: false,
                 },
@@ -619,7 +651,11 @@ impl Renderer {
                     format!(
                         "Страница {page} из {} · {}",
                         layout.pages.len(),
-                        if v.dirty {
+                        if (v.dirty && !v.autosave_status.is_empty())
+                            || v.autosave_status == "Ошибка автосохранения"
+                        {
+                            v.autosave_status
+                        } else if v.dirty {
                             "Есть несохранённые правки"
                         } else {
                             "Нет несохранённых правок"
