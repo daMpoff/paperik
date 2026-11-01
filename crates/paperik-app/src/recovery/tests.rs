@@ -3,6 +3,24 @@ use paperik_document::{
     Document,
     editor::{Edit, Position},
 };
+use std::time::Duration;
+
+#[test]
+fn asynchronous_clean_and_retire_order_after_the_last_checkpoint() {
+    let root = TestRoot::new();
+    let mut autosave = Autosave::new(&root.0).unwrap();
+    let mut e = editor();
+    apply(&mut e, "queued");
+    assert!(autosave.queue(&e, "Draft.docx").unwrap());
+    autosave.clean_async().unwrap();
+    assert!(!autosave.queue(&e, "Draft.docx").unwrap());
+    let stopped = autosave.retire();
+    stopped
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
+    assert!(find(&root.0, &BTreeSet::new()).unwrap().is_none());
+}
 struct TestRoot(PathBuf);
 impl TestRoot {
     fn new() -> Self {

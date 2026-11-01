@@ -7,10 +7,10 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, SyncSender},
+        mpsc::{self, Receiver, Sender},
     },
     thread::{self, JoinHandle},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 const MAX_FILE: usize = 64 * 1024 * 1024;
 const CLOSED: &[u8] = b"PAPERIK-SESSION-CLOSED-1\ncomplete\n";
@@ -324,18 +324,19 @@ pub struct Event {
     pub result: Result<(), String>,
 }
 pub struct Autosave {
-    sender: Option<SyncSender<Job>>,
+    sender: Option<Sender<Job>>,
     events: Receiver<Event>,
     worker: Option<JoinHandle<()>>,
     pub busy: bool,
     disconnected: bool,
+    clean_ack: Option<Receiver<Result<(), String>>>,
 }
 impl Autosave {
     pub fn new(root: &Path) -> Result<Self, String> {
         Self::resume(Session::create(root)?)
     }
     pub fn resume(mut session: Session) -> Result<Self, String> {
-        let (sender, queue) = mpsc::sync_channel(1);
+        let (sender, queue) = mpsc::channel();
         let (report, events) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("paperik-autosave".into())
@@ -369,26 +370,24 @@ impl Autosave {
             worker: Some(worker),
             busy: false,
             disconnected: false,
+            clean_ack: None,
         })
     }
     pub fn queue(&mut self, editor: &Editor, name: &str) -> Result<bool, String> {
-        if self.busy {
+        if self.busy || self.clean_ack.is_some() {
             return Ok(false);
         }
         match self
             .sender
             .as_ref()
             .ok_or("Автосохранение остановлено")?
-            .try_send(Job::Checkpoint(Box::new(editor.clone()), name.into()))
+            .send(Job::Checkpoint(Box::new(editor.clone()), name.into()))
         {
             Ok(()) => {
                 self.busy = true;
                 Ok(true)
             }
-            Err(mpsc::TrySendError::Full(_)) => Ok(false),
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                Err("Фоновое автосохранение остановилось".into())
-            }
+            Err(_) => Err("Фоновое автосохранение остановилось".into()),
         }
     }
     pub fn poll(&mut self) -> Vec<Event> {
@@ -413,8 +412,55 @@ impl Autosave {
                 }
             }
         }
+        if let Some(ack) = &self.clean_ack {
+            match ack.try_recv() {
+                Ok(answer) => {
+                    self.clean_ack = None;
+                    if let Err(error) = answer {
+                        result.push(Event {
+                            stamp: 0,
+                            result: Err(error),
+                        });
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.clean_ack = None;
+                    result.push(Event {
+                        stamp: 0,
+                        result: Err("Автосохранение не подтвердило завершение".into()),
+                    });
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         result
     }
+    pub fn clean_async(&mut self) -> Result<(), String> {
+        if self.clean_ack.is_some() {
+            return Ok(());
+        }
+        let (ack, result) = mpsc::channel();
+        self.sender
+            .as_ref()
+            .ok_or("Автосохранение остановлено")?
+            .send(Job::Clean(ack))
+            .map_err(|_| "Автосохранение остановлено")?;
+        self.clean_ack = Some(result);
+        Ok(())
+    }
+    pub fn abandon(mut self) {
+        self.sender.take();
+        self.worker.take();
+    }
+    pub fn retire(mut self) -> Receiver<Result<(), String>> {
+        let (ack, result) = mpsc::channel();
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.send(Job::Stop(ack));
+        }
+        self.worker.take(); // The acknowledgement is polled; UI never joins this thread.
+        result
+    }
+    #[cfg(test)]
     pub fn clean(&mut self) -> Result<(), String> {
         let (ack, result) = mpsc::channel();
         self.sender
@@ -423,9 +469,10 @@ impl Autosave {
             .send(Job::Clean(ack))
             .map_err(|_| "Фоновое автосохранение остановилось")?;
         result
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(std::time::Duration::from_secs(30))
             .map_err(|_| "Автосохранение не подтвердило завершение записи".to_owned())?
     }
+    #[cfg(test)]
     pub fn finish(mut self) -> Result<(), String> {
         let (ack, result) = mpsc::channel();
         self.sender
@@ -433,7 +480,7 @@ impl Autosave {
             .ok_or("Автосохранение остановлено")?
             .send(Job::Stop(ack))
             .map_err(|_| "Фоновое автосохранение остановилось")?;
-        let result = match result.recv_timeout(Duration::from_secs(30)) {
+        let result = match result.recv_timeout(std::time::Duration::from_secs(30)) {
             Ok(result) => result,
             Err(_) => {
                 self.worker.take();

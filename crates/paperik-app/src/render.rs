@@ -101,12 +101,30 @@ pub fn draw_page(target: &ID2D1RenderTarget, page: &layout::PageLayout, width: f
                 &rect(0.0, line.y, width, line.height),
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
+            let start = line.layout_text_start;
+            let end = start + line.layout_length;
+            let colors = &line.layout.colors;
+            let first =
+                colors.partition_point(|(range, _)| range.startPosition + range.length <= start);
+            for (range, rgb) in colors[first..]
+                .iter()
+                .take_while(|(range, _)| range.startPosition < end)
+            {
+                let lo = range.startPosition.max(start);
+                let hi = (range.startPosition + range.length).min(end);
+                let visible = windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
+                    startPosition: lo,
+                    length: hi - lo,
+                };
+                let brush = target.CreateSolidColorBrush(&layout::color(*rgb), None)?;
+                line.layout.native.SetDrawingEffect(&brush, visible)?;
+            }
             target.DrawTextLayout(
                 Vector2 {
                     X: line.x,
                     Y: line.y - line.source_y,
                 },
-                &line.layout,
+                &line.layout.native,
                 &black,
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
             );
@@ -160,6 +178,7 @@ impl Renderer {
             })
         }
     }
+    #[cfg(test)]
     pub fn document(&self, document: &Document) -> Result<Layout> {
         layout::build(&self.text, &self.target, document)
     }

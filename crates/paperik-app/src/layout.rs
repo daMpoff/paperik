@@ -1,15 +1,27 @@
 use paperik_document::{Alignment, Document, Font, LineSpacing, Paragraph};
 use std::collections::BTreeSet;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
-use windows::Win32::Graphics::Direct2D::{ID2D1RenderTarget, ID2D1SolidColorBrush};
+use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::{HSTRING, Interface, Result, w};
 mod input;
 pub use input::Caret;
 
 #[derive(Clone)]
+pub struct TextLayout {
+    pub native: IDWriteTextLayout,
+    pub colors: std::sync::Arc<Vec<(DWRITE_TEXT_RANGE, [u8; 3])>>,
+}
+impl std::ops::Deref for TextLayout {
+    type Target = IDWriteTextLayout;
+    fn deref(&self) -> &Self::Target {
+        &self.native
+    }
+}
+
+#[derive(Clone)]
 pub struct Line {
-    pub layout: IDWriteTextLayout,
+    pub layout: TextLayout,
     pub x: f32,
     pub y: f32,
     pub source_y: f32,
@@ -20,6 +32,7 @@ pub struct Line {
     pub paragraph: usize,
     pub baseline: f32,
     pub layout_text_start: u32,
+    pub layout_length: u32,
 }
 pub struct PageLayout {
     pub lines: Vec<Line>,
@@ -153,10 +166,6 @@ pub fn color(rgb: [u8; 3]) -> D2D1_COLOR_F {
         a: 1.0,
     }
 }
-fn brush(target: &ID2D1RenderTarget, rgb: [u8; 3]) -> Result<ID2D1SolidColorBrush> {
-    // SAFETY: the color is valid and the returned COM object owns its resources.
-    unsafe { target.CreateSolidColorBrush(&color(rgb), None) }
-}
 
 fn metrics(layout: &IDWriteTextLayout) -> Result<Vec<DWRITE_LINE_METRICS>> {
     // SAFETY: the first call obtains the required length; the second owns that buffer.
@@ -220,15 +229,15 @@ fn font_line_box(factory: &IDWriteFactory, paragraph: &Paragraph) -> Result<Opti
 }
 
 fn shaped(
-    context: (&IDWriteFactory, &ID2D1RenderTarget),
+    factory: &IDWriteFactory,
     paragraph: &Paragraph,
     text: &[u16],
     start: u32,
     prefix: u32,
     width: f32,
     tab_stop: f32,
-) -> Result<IDWriteTextLayout> {
-    let (factory, target) = context;
+) -> Result<TextLayout> {
+    let mut colors = Vec::new();
     let base = paragraph
         .runs
         .first()
@@ -294,7 +303,7 @@ fn shaped(
                     range,
                 )?;
                 typography(factory, &layout, &run.font, range)?;
-                layout.SetDrawingEffect(&brush(target, run.font.color)?, range)?;
+                colors.push((range, run.font.color));
             }
             position = end;
         }
@@ -331,7 +340,10 @@ fn shaped(
             Alignment::Right => DWRITE_TEXT_ALIGNMENT_TRAILING,
             Alignment::Justify => DWRITE_TEXT_ALIGNMENT_JUSTIFIED,
         })?;
-        Ok(layout)
+        Ok(TextLayout {
+            native: layout,
+            colors: std::sync::Arc::new(colors),
+        })
     }
 }
 
@@ -380,7 +392,6 @@ fn typography(
 
 fn prepare(
     factory: &IDWriteFactory,
-    target: &ID2D1RenderTarget,
     paragraph: &Paragraph,
     width: f32,
     settings: ParagraphSettings,
@@ -410,7 +421,7 @@ fn prepare(
     let first_width = (width - paragraph.style.first_line).max(1.0);
     if paragraph.style.alignment == Alignment::Justify {
         return justified(
-            (factory, target),
+            factory,
             paragraph,
             &text,
             prefix.encode_utf16().count() as u32,
@@ -419,7 +430,7 @@ fn prepare(
         );
     }
     let first = shaped(
-        (factory, target),
+        factory,
         paragraph,
         &text,
         0,
@@ -444,11 +455,12 @@ fn prepare(
             paragraph: paragraph_index,
             baseline: line.baseline,
             layout_text_start: 0,
+            layout_length: line.length,
         });
         let first_length = line.length.min(text.len() as u32) as usize;
         if first_length < text.len() {
             let rest = shaped(
-                (factory, target),
+                factory,
                 paragraph,
                 &text[first_length..],
                 first_length as u32,
@@ -471,6 +483,7 @@ fn prepare(
                     paragraph: paragraph_index,
                     baseline: metric.baseline,
                     layout_text_start: position - first_length as u32,
+                    layout_length: metric.length,
                 });
                 y += metric.height;
                 position += metric.length;
@@ -489,7 +502,7 @@ fn prepare(
 const MAX_SPACE_SHRINK: f32 = 0.25;
 
 fn justified(
-    context: (&IDWriteFactory, &ID2D1RenderTarget),
+    factory: &IDWriteFactory,
     paragraph: &Paragraph,
     text: &[u16],
     prefix: u32,
@@ -501,7 +514,7 @@ fn justified(
         index: paragraph_index,
         compress,
     } = settings;
-    let measured = shaped(context, paragraph, text, 0, prefix, 1_000_000.0, tab_stop)?;
+    let measured = shaped(factory, paragraph, text, 0, prefix, 1_000_000.0, tab_stop)?;
     let mut count = 0;
     unsafe {
         let _ = measured.GetClusterMetrics(None, &mut count);
@@ -580,7 +593,7 @@ fn justified(
         let stop = clusters[end - 1].1;
         let fragment = &text[start..stop];
         let layout = shaped(
-            context,
+            factory,
             paragraph,
             fragment,
             start as u32,
@@ -648,6 +661,7 @@ fn justified(
             paragraph: paragraph_index,
             baseline: metric.baseline,
             layout_text_start: 0,
+            layout_length: (stop - start) as u32,
         });
         begin = end;
     }
@@ -664,9 +678,31 @@ fn fonts(paragraph: &Paragraph) -> impl Iterator<Item = &Font> {
 
 pub fn build(
     factory: &IDWriteFactory,
-    target: &ID2D1RenderTarget,
+    _target: &ID2D1RenderTarget,
     document: &Document,
 ) -> Result<Layout> {
+    build_cancelled(
+        factory,
+        document,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+}
+
+pub fn build_cancelled(
+    factory: &IDWriteFactory,
+    document: &Document,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<Layout> {
+    let check = || -> Result<()> {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                0x80004004u32 as i32,
+            )))
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
     let mut missing_fonts = BTreeSet::new();
     // SAFETY: COM returns a retained font collection; the output buffer is local.
     unsafe {
@@ -694,9 +730,9 @@ pub fn build(
         .iter()
         .enumerate()
         .map(|(i, p)| {
+            check()?;
             prepare(
                 factory,
-                target,
                 p,
                 content_width,
                 ParagraphSettings {
@@ -716,6 +752,7 @@ pub fn build(
     let mut y = top;
     let mut previous_after = 0.0_f32;
     for (index, paragraph) in document.paragraphs.iter().enumerate() {
+        check()?;
         let prepared = &paragraphs_prepared[index];
         let mut before = prepared.before.max(previous_after);
         if index > 0
@@ -819,7 +856,6 @@ pub fn build(
             }
             let prepared = prepare(
                 factory,
-                target,
                 &paragraph,
                 content_width,
                 ParagraphSettings {
@@ -897,11 +933,11 @@ mod tests {
     }
     #[test]
     fn modern_justification_fits_by_spaces_without_scaling_glyphs() {
-        let (factory, target) = context();
+        let (factory, _target) = context();
         let mut paragraph = paragraph("alpha beta gamma");
         paragraph.style.alignment = Alignment::Justify;
         let text: Vec<_> = paragraph.text().encode_utf16().collect();
-        let raw = shaped((&factory, &target), &paragraph, &text, 0, 0, 1000.0, 48.0).unwrap();
+        let raw = shaped(&factory, &paragraph, &text, 0, 0, 1000.0, 48.0).unwrap();
         let mut measured = DWRITE_TEXT_METRICS::default();
         unsafe {
             raw.GetMetrics(&mut measured).unwrap();
@@ -909,7 +945,6 @@ mod tests {
         let width = measured.width - 0.5;
         let legacy = prepare(
             &factory,
-            &target,
             &paragraph,
             width,
             ParagraphSettings {
@@ -921,7 +956,6 @@ mod tests {
         .unwrap();
         let modern = prepare(
             &factory,
-            &target,
             &paragraph,
             width,
             ParagraphSettings {
@@ -954,12 +988,12 @@ mod tests {
     }
     #[test]
     fn proportional_spacing_keeps_the_first_baseline() {
-        let (factory, target) = context();
+        let (factory, _target) = context();
         let mut paragraph = paragraph("Sample");
         let text: Vec<_> = paragraph.text().encode_utf16().collect();
-        let single = shaped((&factory, &target), &paragraph, &text, 0, 0, 500.0, 48.0).unwrap();
+        let single = shaped(&factory, &paragraph, &text, 0, 0, 500.0, 48.0).unwrap();
         paragraph.style.line = LineSpacing::Multiple(1.5);
-        let spaced = shaped((&factory, &target), &paragraph, &text, 0, 0, 500.0, 48.0).unwrap();
+        let spaced = shaped(&factory, &paragraph, &text, 0, 0, 500.0, 48.0).unwrap();
         let a = metrics(&single).unwrap()[0];
         let b = metrics(&spaced).unwrap()[0];
         assert!((a.baseline - b.baseline).abs() < 0.001);
@@ -1001,18 +1035,17 @@ mod tests {
     }
     #[test]
     fn a_price_and_its_solidus_unit_are_not_split() {
-        let (factory, target) = context();
+        let (factory, _target) = context();
         let mut paragraph = paragraph("AAA 50/GB BBB");
         paragraph.style.alignment = Alignment::Justify;
         let prefix: Vec<_> = "AAA 50/".encode_utf16().collect();
-        let raw = shaped((&factory, &target), &paragraph, &prefix, 0, 0, 1000.0, 48.0).unwrap();
+        let raw = shaped(&factory, &paragraph, &prefix, 0, 0, 1000.0, 48.0).unwrap();
         let mut size = DWRITE_TEXT_METRICS::default();
         unsafe {
             raw.GetMetrics(&mut size).unwrap();
         }
         let result = prepare(
             &factory,
-            &target,
             &paragraph,
             size.width + 0.1,
             ParagraphSettings {

@@ -1,6 +1,9 @@
 //! In-memory editing. The immutable source package is never rewritten here.
 use crate::{Document, Font, Paragraph, Run};
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 use unicode_segmentation::UnicodeSegmentation;
 mod recovery;
 
@@ -39,7 +42,7 @@ pub enum Edit {
 }
 #[derive(Clone)]
 struct Snapshot {
-    document: Document,
+    document: Arc<Document>,
     selection: Selection,
     revision: u64,
 }
@@ -58,7 +61,7 @@ pub struct PendingChange {
 }
 #[derive(Clone)]
 pub struct Editor {
-    document: Document,
+    document: Arc<Document>,
     selection: Selection,
     undo: VecDeque<Snapshot>,
     redo: VecDeque<Snapshot>,
@@ -249,7 +252,7 @@ impl Editor {
             });
         }
         Self {
-            document,
+            document: Arc::new(document),
             selection: Selection::default(),
             undo: VecDeque::new(),
             redo: VecDeque::new(),
@@ -393,7 +396,7 @@ impl Editor {
         };
         if !matches!(kind, ChangeKind::New) {
             return Ok(history.map(|snapshot| PendingChange {
-                document: snapshot.document.clone(),
+                document: snapshot.document.as_ref().clone(),
                 selection: snapshot.selection,
                 generation: self.generation,
                 revision: snapshot.revision,
@@ -455,7 +458,7 @@ impl Editor {
         {
             return Err(format!("Этот абзац доступен только для чтения: {reason}"));
         }
-        let mut document = self.document.clone();
+        let mut document = self.document.as_ref().clone();
         let first = &self.document.paragraphs[start.paragraph];
         let last = &self.document.paragraphs[end.paragraph];
         let (font, source) = insertion_font(first, start.offset);
@@ -532,7 +535,7 @@ impl Editor {
                 self.undo.push_back(previous);
             }
         }
-        self.document = change.document;
+        self.document = Arc::new(change.document);
         self.selection = change.selection;
         self.revision = change.revision;
         self.generation += 1;
@@ -639,7 +642,7 @@ mod tests {
     #[test]
     fn replacement_preserves_unaffected_runs_and_undo_restores_everything() {
         let mut e = plain("abcdef");
-        e.document.paragraphs[0].runs = vec![
+        Arc::make_mut(&mut e.document).paragraphs[0].runs = vec![
             Run {
                 text: "abc".into(),
                 font: Font::default(),
@@ -733,14 +736,14 @@ mod tests {
     #[test]
     fn numbered_paragraphs_continue_and_undo_restores_labels() {
         let mut e = plain("first");
-        e.document.paragraphs[0].list = Some(crate::ListSpec {
+        Arc::make_mut(&mut e.document).paragraphs[0].list = Some(crate::ListSpec {
             id: "1".into(),
             level: 0,
             start: 1,
             pattern: "%1.".into(),
             decimal: true,
         });
-        e.document.paragraphs[0].list_label = Some("1.".into());
+        Arc::make_mut(&mut e.document).paragraphs[0].list_label = Some("1.".into());
         apply(&mut e, Edit::Insert("\nsecond".into()));
         assert_eq!(e.document.paragraphs[1].list_label.as_deref(), Some("2."));
         apply(&mut e, Edit::Undo);

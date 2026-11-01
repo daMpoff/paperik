@@ -20,16 +20,29 @@ use windows_sys::Win32::{
     },
 };
 
+#[cfg(test)]
+mod perf;
+mod work;
+use work::{Action, Kind, ScanResult};
+
 const CLASS: *const u16 = windows_sys::w!("Paperik.MainWindow");
 const TITLE: *const u16 = windows_sys::w!("Paperik");
 
 struct State {
+    work: Option<crate::tasks::Background<work::Outcome>>,
+    kind: Option<Kind>,
+    edits: std::collections::VecDeque<Edit>,
+    edit_bytes: usize,
+    after: Option<Action>,
+    retired: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
+    closing: bool,
     renderer: Option<Renderer>,
     editor: Option<Editor>,
     layout: Option<Layout>,
     filename: String,
     file_path: Option<PathBuf>,
     message: String,
+    operation_error: Option<String>,
     width: f32,
     height: f32,
     dpi: f32,
@@ -50,15 +63,32 @@ struct State {
     input: crate::text_input::Utf16Input,
     composing: bool,
 }
+impl Drop for State {
+    fn drop(&mut self) {
+        if let Some(autosave) = self.autosave.take() {
+            // Unexpected teardown preserves the current draft; Drop must never join I/O.
+            autosave.abandon();
+        }
+    }
+}
+
 impl State {
     fn empty(dpi: f32) -> Self {
         Self {
+            work: None,
+            kind: None,
+            edits: Default::default(),
+            edit_bytes: 0,
+            after: None,
+            retired: Vec::new(),
+            closing: false,
             renderer: None,
             editor: None,
             layout: None,
             filename: String::new(),
             file_path: None,
             message: String::new(),
+            operation_error: None,
             width: 1320.0,
             height: 820.0,
             dpi,
@@ -90,7 +120,7 @@ impl State {
             document: self.editor.as_ref().map(Editor::document),
             layout: self.layout.as_ref(),
             filename: &self.filename,
-            message: &self.message,
+            message: self.operation_error.as_deref().unwrap_or(&self.message),
             selection: self.editor.as_ref().map(Editor::selection),
             dirty: self.editor.as_ref().is_some_and(Editor::dirty),
             autosave_status: self.autosave_status,
@@ -100,66 +130,15 @@ impl State {
     fn clamp(&mut self) {
         self.scroll = self.scroll.clamp(0.0, render::max_scroll(&self.view()));
     }
-    fn load(&mut self, path: PathBuf) -> Result<(), String> {
-        let editor = Editor::new(Document::open(&path)?);
-        let document = editor.document();
-        let layout = self
-            .renderer
-            .as_ref()
-            .ok_or("Рендерер недоступен")?
-            .document(document)
-            .map_err(|e| format!("Не удалось выполнить вёрстку: {e}"))?;
-        self.finish_autosave();
-        self.filename = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        self.file_path = Some(path);
-        self.zoom = render::fit_zoom(self.width, self.height, document);
-        self.scroll = 0.0;
-        self.editor = Some(editor);
-        self.layout = Some(layout);
-        self.message.clear();
-        self.upstream = false;
-        self.preferred_x = None;
-        self.input.clear();
-        self.start_autosave();
-        Ok(())
-    }
-    fn start_autosave(&mut self) {
-        if self.recovery_root.is_none() {
-            self.update_autosave_status();
-            return;
-        }
-        self.confirmed_stamp = None;
-        self.autosave_error = None;
-        self.last_attempt = std::time::Instant::now();
-        if let Some(root) = &self.recovery_root {
-            match Autosave::new(root) {
-                Ok(autosave) => {
-                    self.autosave = Some(autosave);
-                    self.autosave_status = "Автосохранение включено";
-                }
-                Err(error) => {
-                    self.autosave_error = Some(error.clone());
-                    self.message = format!("Автосохранение недоступно: {error}");
-                    self.autosave_status = "Ошибка автосохранения";
-                }
-            }
-        }
-    }
     fn finish_autosave(&mut self) {
-        if let Some(autosave) = self.autosave.take()
-            && let Err(error) = autosave.finish()
-        {
-            self.message = format!("Черновик не закрыт: {error}");
+        if let Some(autosave) = self.autosave.take() {
+            self.retired.push(autosave.retire());
         }
     }
     fn clear_autosave(&mut self) {
         self.confirmed_stamp = None;
         if let Some(autosave) = &mut self.autosave {
-            if let Err(error) = autosave.clean() {
+            if let Err(error) = autosave.clean_async() {
                 self.autosave_error = Some(error.clone());
                 self.message = format!("Не удалось завершить черновик: {error}");
             } else {
@@ -216,84 +195,6 @@ impl State {
         }
         self.update_autosave_status();
         self.autosave_status != previous
-    }
-    fn restore(&mut self, recovered: Recovered) -> Result<(), String> {
-        let layout = self
-            .renderer
-            .as_ref()
-            .ok_or("Рендерер недоступен")?
-            .document(recovered.editor.document())
-            .map_err(|e| e.to_string())?;
-        let autosave = Autosave::resume(recovered.session)?;
-        self.finish_autosave();
-        self.zoom = render::fit_zoom(self.width, self.height, recovered.editor.document());
-        self.scroll = 0.0;
-        self.confirmed_stamp = Some(recovered.editor.checkpoint_stamp());
-        self.editor = Some(recovered.editor);
-        self.layout = Some(layout);
-        self.filename = recovered.name;
-        self.file_path = None;
-        self.autosave = Some(autosave);
-        self.autosave_error = None;
-        self.last_attempt = std::time::Instant::now();
-        self.upstream = false;
-        self.preferred_x = None;
-        self.input.clear();
-        self.message = if recovered.previous_generation {
-            "Восстановлен предыдущий исправный снимок сессии."
-        } else {
-            "Несохранённая сессия восстановлена. Сохраните копию DOCX."
-        }
-        .into();
-        self.update_autosave_status();
-        self.reveal();
-        Ok(())
-    }
-    fn save_to(&mut self, path: PathBuf) -> Result<(), String> {
-        let editor = self.editor.as_mut().ok_or("Сначала откройте документ")?;
-        let count = self.layout.as_ref().map(|l| l.pages.len());
-        editor.document().save_new(&path, count)?;
-        editor.mark_saved();
-        self.filename = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        self.file_path = Some(path);
-        self.message = "Копия сохранена. Исходный документ не изменён.".into();
-        self.clear_autosave();
-        Ok(())
-    }
-    fn apply(&mut self, edit: Edit) -> Result<(), String> {
-        let was_dirty = self.editor.as_ref().is_some_and(Editor::dirty);
-        let Some(editor) = &mut self.editor else {
-            return Ok(());
-        };
-        if let Some(change) = editor.prepare(edit)? {
-            let layout = self
-                .renderer
-                .as_ref()
-                .ok_or("Рендерер недоступен")?
-                .document(&change.document)
-                .map_err(|error| {
-                    format!("Изменение отменено: не удалось выполнить вёрстку ({error})")
-                })?;
-            editor.commit(change)?;
-            self.layout = Some(layout);
-            self.upstream = false;
-            self.preferred_x = None;
-        }
-        self.message.clear();
-        let dirty = self.editor.as_ref().is_some_and(Editor::dirty);
-        if was_dirty && !dirty {
-            self.clear_autosave();
-        }
-        if !was_dirty && dirty {
-            self.last_attempt = std::time::Instant::now();
-        }
-        self.update_autosave_status();
-        self.reveal();
-        Ok(())
     }
     fn caret(&self) -> Option<crate::layout::Caret> {
         let editor = self.editor.as_ref()?;
@@ -513,6 +414,7 @@ pub fn run(smoke_test: bool, path: Option<PathBuf>) -> Result<(), String> {
             Renderer::new(handle, client.right as u32, client.bottom as u32, dpi)
                 .map_err(|e| e.to_string())?,
         );
+        SetTimer(handle, 3, 16, None);
         if let Some(path) = path {
             state.load(path)?;
             let title: Vec<u16> = format!("{} — Paperik", state.filename)
@@ -522,6 +424,10 @@ pub fn run(smoke_test: bool, path: Option<PathBuf>) -> Result<(), String> {
             SetWindowTextW(handle, title.as_ptr());
         }
         if smoke_test {
+            wait_background(handle)?;
+            if !state.message.is_empty() && state.editor.is_none() {
+                return Err(state.message.clone());
+            }
             if SetWindowPos(
                 handle,
                 null_mut(),
@@ -594,26 +500,124 @@ fn open_dialog(window: HWND) -> Option<PathBuf> {
 
 unsafe fn open_file(window: HWND, path: PathBuf) {
     unsafe {
-        if !discard_allowed(window) {
+        request_action(window, Action::Open(path));
+    }
+}
+
+unsafe fn request_action(window: HWND, action: Action) {
+    unsafe {
+        let pointer = state_pointer(window);
+        if pointer.is_null() || (&*pointer).closing {
             return;
         }
+        if matches!(action, Action::Close)
+            && matches!(
+                (&*pointer).kind,
+                Some(Kind::Load | Kind::Scan | Kind::Restore)
+            )
+        {
+            (&mut *pointer).work.take();
+            (&mut *pointer).kind = None;
+        }
+        if matches!(
+            action,
+            Action::Open(_) | Action::Restore(_) | Action::Scan(_)
+        ) && (&*pointer).retired.len() >= 4
+        {
+            (&mut *pointer).after = Some(action);
+            (&mut *pointer).message = "Завершение предыдущих сессий…".into();
+            return;
+        }
+        if matches!(action, Action::Save) && !(&*pointer).busy() && (&*pointer).edits.is_empty() {
+            save_copy(window);
+            return;
+        }
+        (&mut *pointer).after = Some(action);
+        if (&*pointer).busy() || !(&*pointer).edits.is_empty() {
+            (&mut *pointer).cancel_read();
+            refresh(window, false);
+            return;
+        }
+        if !matches!((&*pointer).after, Some(Action::Scan(_))) && !discard_allowed(window) {
+            return;
+        }
+        let Some(action) = (&mut *pointer).after.take() else {
+            return;
+        };
+        let result = match action {
+            Action::Open(path) => (&mut *pointer).load(path),
+            Action::Restore(candidate) => (&mut *pointer).restore(*candidate),
+            Action::Scan(startup) => (&mut *pointer).scan(startup, Default::default()),
+            Action::Save => {
+                save_copy(window);
+                Ok(())
+            }
+            Action::Close => {
+                (&mut *pointer).closing = true;
+                (&mut *pointer).finish_autosave();
+                (&mut *pointer).message = "Завершение записи черновика…".into();
+                Ok(())
+            }
+        };
+        if let Err(error) = result {
+            (&mut *pointer).message = error;
+        }
+        refresh(window, false);
+    }
+}
+
+unsafe fn poll_background(window: HWND) {
+    unsafe {
         let pointer = state_pointer(window);
         if pointer.is_null() {
             return;
         }
-        if let Err(error) = (&mut *pointer).load(path) {
-            (&mut *pointer).message = error.clone();
-            show_error(&error);
-        } else {
-            let title: Vec<u16> = format!("{} — Paperik", (&*pointer).filename)
-                .encode_utf16()
-                .chain(Some(0))
-                .collect();
-            SetWindowTextW(window, title.as_ptr());
+        let (changed, candidate) = (&mut *pointer).poll_work();
+        let pending_cleanup = (&*pointer).retired.len();
+        (&mut *pointer).poll_retired();
+        let changed = changed || pending_cleanup != (&*pointer).retired.len();
+        if let Some(candidate) = candidate {
+            show_recovered(window, candidate);
         }
-        InvalidateRect(window, null(), 0);
-        sync_caret(window);
+        if (&*pointer).closing {
+            if (&*pointer).retired.is_empty() {
+                DestroyWindow(window);
+            }
+            return;
+        }
+        let input_started = (&mut *pointer).next_edit();
+        if !(&*pointer).busy()
+            && (&*pointer).edits.is_empty()
+            && let Some(action) = (&mut *pointer).after.take()
+        {
+            request_action(window, action);
+        }
+        if changed || input_started {
+            refresh(window, false);
+        }
     }
+}
+
+fn wait_background(window: HWND) -> Result<(), String> {
+    let pointer = unsafe { state_pointer(window) };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while unsafe {
+        (&*pointer).busy() || !(&*pointer).edits.is_empty() || !(&*pointer).retired.is_empty()
+    } {
+        if std::time::Instant::now() > deadline {
+            return Err("Превышено время проверки фоновой операции".into());
+        }
+        unsafe {
+            poll_background(window);
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, window, 0, 0, PM_REMOVE) != 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            MsgWaitForMultipleObjectsEx(0, null(), 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        }
+    }
+    Ok(())
 }
 
 /// No State reference crosses a modal/reentrant Windows call.
@@ -632,67 +636,56 @@ unsafe fn discard_allowed(window: HWND) -> bool {
             windows_sys::w!("Paperik — несохранённые изменения"),
             MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON3,
         ) {
-            IDYES => save_copy(window),
+            IDYES => {
+                save_copy(window);
+                false
+            }
             IDNO => true,
-            _ => false,
+            _ => {
+                (&mut *pointer).after = None;
+                false
+            }
         }
     }
 }
 
 unsafe fn restore_session(window: HWND, startup: bool) {
     unsafe {
+        request_action(window, Action::Scan(startup));
+    }
+}
+unsafe fn show_recovered(window: HWND, scan: ScanResult) {
+    unsafe {
         let pointer = state_pointer(window);
         if pointer.is_null() {
             return;
         }
-        let Some(root) = (&*pointer).recovery_root.clone() else {
+        let Some(candidate) = scan.candidate else {
+            if !scan.startup {
+                (&mut *pointer).message = "Несохранённых сессий для восстановления нет.".into();
+            }
             return;
         };
-        let mut skip = std::collections::BTreeSet::new();
-        loop {
-            let candidate = match recovery::find(&root, &skip) {
-                Ok(Some(candidate)) => candidate,
-                Ok(None) => {
-                    if !startup {
-                        (&mut *pointer).message =
-                            "Несохранённых сессий для восстановления нет.".into();
-                        refresh(window, false);
-                    }
-                    return;
-                }
-                Err(error) => {
+        let text = format!(
+            "Найдена несохранённая сессия: {}\n\nВосстановить текст, оформление и Undo/Redo?\nДа — восстановить. Нет — показать более раннюю сессию. Отмена — оставить на потом.",
+            candidate.name
+        );
+        let wide: Vec<_> = text.encode_utf16().chain(Some(0)).collect();
+        match MessageBoxW(
+            window,
+            wide.as_ptr(),
+            windows_sys::w!("Paperik — восстановление сессии"),
+            MB_YESNOCANCEL | MB_ICONQUESTION,
+        ) {
+            IDYES => request_action(window, Action::Restore(Box::new(candidate))),
+            IDNO => {
+                let mut skip = scan.skip;
+                skip.insert(candidate.path().to_owned());
+                if let Err(error) = (&mut *pointer).scan(scan.startup, skip) {
                     (&mut *pointer).message = error;
-                    refresh(window, false);
-                    return;
                 }
-            };
-            let text = format!(
-                "Найдена несохранённая сессия: {}\n\nВосстановить текст, оформление и Undo/Redo?\n\nДа — восстановить. Нет — показать более раннюю сессию.\nОтмена — оставить на потом, через кнопку «Восстановить сессию».",
-                candidate.name
-            );
-            let wide: Vec<_> = text.encode_utf16().chain(Some(0)).collect();
-            match MessageBoxW(
-                window,
-                wide.as_ptr(),
-                windows_sys::w!("Paperik — восстановление сессии"),
-                MB_YESNOCANCEL | MB_ICONQUESTION,
-            ) {
-                IDYES => {
-                    if !discard_allowed(window) {
-                        return;
-                    }
-                    if let Err(error) = (&mut *pointer).restore(candidate) {
-                        (&mut *pointer).message =
-                            format!("Не удалось восстановить сессию: {error}");
-                    }
-                    refresh(window, true);
-                    return;
-                }
-                IDNO => {
-                    skip.insert(candidate.path().to_owned());
-                }
-                _ => return,
             }
+            _ => {}
         }
     }
 }
@@ -740,6 +733,10 @@ unsafe fn save_copy(window: HWND) -> bool {
         if pointer.is_null() || (&*pointer).editor.is_none() {
             return false;
         }
+        if (&*pointer).busy() || !(&*pointer).edits.is_empty() {
+            (&mut *pointer).after = Some(Action::Save);
+            return false;
+        }
         // All values owned here: the modal dialog is allowed to pump window messages.
         let current = (&*pointer)
             .file_path
@@ -751,20 +748,18 @@ unsafe fn save_copy(window: HWND) -> bool {
             .to_string_lossy()
             .into_owned();
         let parent = current.parent().unwrap_or(std::path::Path::new("."));
-        let mut suggested = parent.join(format!("{stem} — копия.docx"));
-        for index in 2..10000 {
-            if !suggested.exists() {
-                break;
-            }
-            suggested = parent.join(format!("{stem} — копия {index}.docx"));
-        }
+        let suggested = parent.join(format!("{stem} — копия.docx"));
         let result = match save_dialog(window, &suggested) {
             Ok(Some(path)) => (&mut *pointer).save_to(path),
-            Ok(None) => return false,
+            Ok(None) => {
+                (&mut *pointer).after = None;
+                return false;
+            }
             Err(error) => Err(error),
         };
         let success = result.is_ok();
         if let Err(error) = result {
+            (&mut *pointer).after = None;
             (&mut *pointer).message = error.clone();
             let text: Vec<_> = error.encode_utf16().chain(Some(0)).collect();
             MessageBoxW(
@@ -889,7 +884,13 @@ unsafe fn edit(window: HWND, command: Edit) {
         if pointer.is_null() {
             return;
         }
+        (&mut *pointer).dragging = false;
+        KillTimer(window, 1);
+        if GetCapture() == window {
+            ReleaseCapture();
+        }
         if let Err(error) = (&mut *pointer).apply(command) {
+            (&mut *pointer).operation_error = Some(error.clone());
             (&mut *pointer).message = error;
         }
         refresh(window, true);
@@ -897,6 +898,10 @@ unsafe fn edit(window: HWND, command: Edit) {
 }
 unsafe fn drag(window: HWND) {
     unsafe {
+        let pointer = state_pointer(window);
+        if !pointer.is_null() && (&*pointer).busy() {
+            return;
+        }
         let pointer = state_pointer(window);
         if pointer.is_null() {
             return;
@@ -940,13 +945,7 @@ unsafe extern "system" fn procedure(
         let pointer = state_pointer(window);
         match message {
             WM_CLOSE => {
-                if discard_allowed(window) {
-                    if !pointer.is_null() {
-                        (&mut *pointer).finish_autosave();
-                    }
-                    KillTimer(window, 2);
-                    DestroyWindow(window);
-                }
+                request_action(window, Action::Close);
                 0
             }
             WM_SETFOCUS if !pointer.is_null() => {
@@ -962,6 +961,7 @@ unsafe extern "system" fn procedure(
             }
             WM_DESTROY => {
                 KillTimer(window, 2);
+                KillTimer(window, 3);
                 PostQuitMessage(0);
                 0
             }
@@ -1054,6 +1054,12 @@ unsafe extern "system" fn procedure(
             WM_KEYDOWN if !pointer.is_null() => {
                 let ctrl = GetKeyState(VK_CONTROL as i32) < 0 && GetKeyState(VK_MENU as i32) >= 0;
                 let shift = GetKeyState(VK_SHIFT as i32) < 0;
+                if wparam == VK_ESCAPE as usize {
+                    (&mut *pointer).after = None;
+                    (&mut *pointer).cancel_read();
+                    refresh(window, false);
+                    return 0;
+                }
                 if (&*pointer).composing {
                     return DefWindowProcW(window, message, wparam, lparam);
                 }
@@ -1082,6 +1088,9 @@ unsafe extern "system" fn procedure(
                     if let Some(path) = open_dialog(window) {
                         open_file(window, path);
                     }
+                    return 0;
+                }
+                if (&*pointer).busy() && ctrl && wparam == b'X' as usize {
                     return 0;
                 }
                 if ctrl && matches!(wparam as u8, b'C' | b'X') {
@@ -1151,6 +1160,9 @@ unsafe extern "system" fn procedure(
                 }
                 if wparam == VK_TAB as usize {
                     edit(window, Edit::Insert("\t".into()));
+                    return 0;
+                }
+                if (&*pointer).busy() {
                     return 0;
                 }
                 let state = &mut *pointer;
@@ -1268,6 +1280,9 @@ unsafe extern "system" fn procedure(
                 }
             }
             WM_LBUTTONDOWN | WM_LBUTTONDBLCLK if !pointer.is_null() => {
+                if (&*pointer).busy() {
+                    return 0;
+                }
                 let state = &*pointer;
                 let x = (lparam as u16 as i16) as f32 * 96.0 / state.dpi;
                 let y = ((lparam >> 16) as u16 as i16) as f32 * 96.0 / state.dpi;
@@ -1308,6 +1323,10 @@ unsafe extern "system" fn procedure(
             }
             WM_TIMER if wparam == 1 && !pointer.is_null() => {
                 drag(window);
+                0
+            }
+            WM_TIMER if wparam == 3 && !pointer.is_null() => {
+                poll_background(window);
                 0
             }
             WM_TIMER if wparam == 2 && !pointer.is_null() => {
@@ -1452,12 +1471,14 @@ mod tests {
             std::fs::create_dir(&recovery_root).unwrap();
             state.recovery_root = Some(recovery_root.clone());
             state.load(fixture.clone()).unwrap();
+            wait_background(handle).unwrap();
             let source = std::fs::read(&fixture).unwrap();
             let paragraphs = state.editor.as_ref().unwrap().document().paragraphs.clone();
             procedure(handle, WM_KEYDOWN, VK_PACKET as usize, 0);
             procedure(handle, WM_CHAR, 0xd83d, 0);
             procedure(handle, WM_KEYDOWN, VK_PACKET as usize, 0);
             procedure(handle, WM_CHAR, 0xde80, 0);
+            wait_background(handle).unwrap();
             assert!(
                 state.editor.as_ref().unwrap().document().paragraphs[0]
                     .text()
@@ -1465,6 +1486,7 @@ mod tests {
             );
             procedure(handle, WM_KEYDOWN, VK_BACK as usize, 0);
             procedure(handle, WM_CHAR, 8, 0);
+            wait_background(handle).unwrap();
             assert_eq!(
                 state.editor.as_ref().unwrap().document().paragraphs,
                 paragraphs
@@ -1472,16 +1494,19 @@ mod tests {
             let count = paragraphs.len();
             procedure(handle, WM_KEYDOWN, VK_RETURN as usize, 0);
             procedure(handle, WM_CHAR, 13, 0);
+            wait_background(handle).unwrap();
             assert_eq!(
                 state.editor.as_ref().unwrap().document().paragraphs.len(),
                 count + 1
             );
             edit(handle, Edit::Undo);
+            wait_background(handle).unwrap();
             assert_eq!(
                 state.editor.as_ref().unwrap().document().paragraphs,
                 paragraphs
             );
             edit(handle, Edit::Redo);
+            wait_background(handle).unwrap();
             assert_eq!(
                 state.editor.as_ref().unwrap().document().paragraphs.len(),
                 count + 1
@@ -1509,6 +1534,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             state.restore(recovered).unwrap();
+            wait_background(handle).unwrap();
             assert_eq!(
                 geometry,
                 state
@@ -1524,6 +1550,7 @@ mod tests {
             std::fs::create_dir(&directory).unwrap();
             let copy = directory.join("edited.docx");
             state.save_to(copy.clone()).unwrap();
+            wait_background(handle).unwrap();
             assert!(!state.editor.as_ref().unwrap().dirty());
             let reopened = Document::open(&copy).unwrap();
             let layout = state
@@ -1534,13 +1561,94 @@ mod tests {
                 .unwrap();
             assert_eq!(geometry, layout.report(&reopened).unwrap());
             state.apply(Edit::Insert("extra".into())).unwrap();
-            assert!(state.save_to(copy.clone()).is_err());
+            wait_background(handle).unwrap();
+            state.save_to(copy.clone()).unwrap();
+            wait_background(handle).unwrap();
+            assert!(state.message.contains("Существующие файлы не изменены"));
             assert!(state.editor.as_ref().unwrap().dirty());
             state.apply(Edit::Undo).unwrap();
+            wait_background(handle).unwrap();
             assert!(!state.editor.as_ref().unwrap().dirty());
+            let queued_copy = directory.join("queued.docx");
+            let saved_bytes = state
+                .editor
+                .as_ref()
+                .unwrap()
+                .document()
+                .to_docx(state.layout.as_ref().map(|layout| layout.pages.len()))
+                .unwrap();
+            state.save_to(queued_copy.clone()).unwrap();
+            procedure(handle, WM_CHAR, b'Q' as usize, 0);
+            assert_eq!(state.edits.len(), 1);
+            wait_background(handle).unwrap();
+            assert_eq!(std::fs::read(&queued_copy).unwrap(), saved_bytes);
+            assert!(state.editor.as_ref().unwrap().dirty());
+            state.apply(Edit::Undo).unwrap();
+            wait_background(handle).unwrap();
+            assert!(!state.editor.as_ref().unwrap().dirty());
+            std::fs::remove_file(queued_copy).unwrap();
+            let preserved = state.editor.as_ref().unwrap().document().paragraphs.clone();
+            state.load(fixture.clone()).unwrap();
+            state.cancel_read();
+            wait_background(handle).unwrap();
+            assert_eq!(
+                state.editor.as_ref().unwrap().document().paragraphs,
+                preserved
+            );
             std::fs::remove_file(copy).unwrap();
             std::fs::remove_dir(directory).unwrap();
+            // A blocked document worker must not block native window callbacks.
+            let (release, gate) = std::sync::mpsc::channel();
+            let work = state.work.as_mut().unwrap();
+            work.start(move |_| {
+                gate.recv().unwrap();
+                Err("controlled cancellation".into())
+            })
+            .unwrap();
+            state.kind = Some(Kind::Load);
+            procedure(handle, WM_SIZE, 0, 0);
+            assert!(state.width > 0.0);
+            assert!(state.busy());
+            state.cancel_read();
+            release.send(()).unwrap();
+            wait_background(handle).unwrap();
+            assert!(state.message.starts_with("Операция отменена"));
+            // Fast input is accepted while layout runs and committed in order.
+            let (release, gate) = std::sync::mpsc::channel();
+            let mut editor = state.editor.as_ref().unwrap().clone();
+            let expected = editor.document().paragraphs[0].text();
+            editor.set_position(Position::default(), false);
+            state.editor = Some(editor.clone());
+            state
+                .work
+                .as_mut()
+                .unwrap()
+                .start(move |_| {
+                    gate.recv().unwrap();
+                    {
+                        let stamp = editor.checkpoint_stamp();
+                        Ok(work::Outcome::Edited(editor, None, stamp))
+                    }
+                })
+                .unwrap();
+            state.kind = Some(Kind::Edit);
+            for ch in "ABC".encode_utf16() {
+                procedure(handle, WM_CHAR, ch as usize, 0);
+            }
+            assert_eq!(state.edits.len(), 3);
+            release.send(()).unwrap();
+            wait_background(handle).unwrap();
+            assert_eq!(
+                state.editor.as_ref().unwrap().document().paragraphs[0].text(),
+                format!("ABC{expected}")
+            );
+            for _ in 0..3 {
+                edit(handle, Edit::Undo);
+                wait_background(handle).unwrap();
+            }
+            assert!(!state.editor.as_ref().unwrap().dirty());
             state.finish_autosave();
+            wait_background(handle).unwrap();
             assert!(
                 recovery::find(&recovery_root, &std::collections::BTreeSet::new())
                     .unwrap()
@@ -1548,6 +1656,30 @@ mod tests {
             );
             std::fs::remove_dir(recovery_root).unwrap();
             assert_eq!(std::fs::read(&fixture).unwrap(), source);
+            let (release_read, blocked_read) = std::sync::mpsc::channel();
+            state
+                .work
+                .as_mut()
+                .unwrap()
+                .start(move |_| {
+                    blocked_read.recv().unwrap();
+                    Err("cancelled read".into())
+                })
+                .unwrap();
+            state.kind = Some(Kind::Load);
+            let (closed, pending) = std::sync::mpsc::channel();
+            state.retired.push(pending);
+            procedure(handle, WM_CLOSE, 0, 0);
+            assert!(state.closing);
+            assert!(!state.busy());
+            poll_background(handle);
+            assert_ne!(IsWindow(handle), 0);
+            procedure(handle, WM_SIZE, 0, 0);
+            closed.send(Ok(())).unwrap();
+            wait_background(handle).unwrap();
+            assert_eq!(IsWindow(handle), 0);
+            release_read.send(()).unwrap();
+
             drop(window);
         }
     }

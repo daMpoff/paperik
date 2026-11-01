@@ -245,7 +245,7 @@ impl<'a> Decoder<'a> {
         }
         validate(&document)?;
         Ok(Snapshot {
-            document,
+            document: std::sync::Arc::new(document),
             selection,
             revision,
         })

@@ -11,6 +11,8 @@ mod recovery;
 #[cfg(target_os = "windows")]
 mod render;
 #[cfg(target_os = "windows")]
+mod tasks;
+#[cfg(target_os = "windows")]
 mod text_input;
 #[cfg(target_os = "windows")]
 mod window;
