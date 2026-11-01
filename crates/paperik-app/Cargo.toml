@@ -7,9 +7,15 @@ repository.workspace = true
 description = "Самостоятельный редактор документов Paperik для Windows"
 publish = false
 
+[dependencies]
+paperik-document.workspace = true
+roxmltree.workspace = true
+
 [[bin]]
 name = "paperik"
 path = "src/main.rs"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+windows.workspace = true
+windows-numerics.workspace = true

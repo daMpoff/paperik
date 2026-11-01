@@ -28,6 +28,15 @@ if (-not (Test-Path -LiteralPath $cargo)) { throw 'Cargo не найден. См
 $offlineArguments = @()
 if ($Offline) { $offlineArguments += '--offline' }
 
+function Copy-TreeFiles([string]$Source, [string]$Destination) {
+    foreach ($file in Get-ChildItem -LiteralPath $Source -File -Recurse) {
+        $relative = [System.IO.Path]::GetRelativePath($Source, $file.FullName)
+        $targetFile = Join-Path $Destination $relative
+        New-Item -ItemType Directory -Path ([System.IO.Path]::GetDirectoryName($targetFile)) -Force | Out-Null
+        Copy-Item -LiteralPath $file.FullName -Destination $targetFile -Force
+    }
+}
+
 Push-Location -LiteralPath $projectRoot
 try {
     if ($Check) {
@@ -67,7 +76,7 @@ try {
     Copy-Item -LiteralPath $binary -Destination (Join-Path $packageRoot 'paperik.exe') -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $packageRoot -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\prototype-readme.txt') -Destination (Join-Path $packageRoot 'README.txt') -Force
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses') -Destination $packageRoot -Recurse -Force
+    Copy-TreeFiles (Join-Path $projectRoot 'licenses') (Join-Path $packageRoot 'licenses')
 
     $rustup = Join-Path ([System.IO.Path]::GetDirectoryName($cargo)) 'rustup.exe'
     if (-not (Test-Path -LiteralPath $rustup)) { throw 'Для упаковки уведомлений требуется rustup рядом с cargo.' }
@@ -76,7 +85,7 @@ try {
     $rustNotices = Join-Path $packageRoot 'licenses\rust'
     New-Item -ItemType Directory -Path $rustNotices -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $sysroot 'share\doc\rust\COPYRIGHT-library.html') -Destination $rustNotices -Force
-    Copy-Item -LiteralPath (Join-Path $sysroot 'share\doc\rust\licenses') -Destination $rustNotices -Recurse -Force
+    Copy-TreeFiles (Join-Path $sysroot 'share\doc\rust\licenses') (Join-Path $rustNotices 'licenses')
 
     & (Join-Path $PSScriptRoot 'test-standalone.ps1') -ExecutablePath (Join-Path $packageRoot 'paperik.exe')
     $zipPath = Join-Path $distRoot "$packageName.zip"

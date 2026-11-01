@@ -16,3 +16,7 @@ Cargo.lock text eol=lf
 *.pdf binary
 *.png binary
 licenses/** text eol=lf -whitespace
+*.svg text eol=lf
+*.html text eol=lf
+*.xml text eol=lf
+*.ico binary

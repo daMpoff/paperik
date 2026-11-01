@@ -1,0 +1,10 @@
+[package]
+name = "paperik-document"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+flate2.workspace = true
+roxmltree.workspace = true
