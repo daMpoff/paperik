@@ -1,0 +1,76 @@
+name: Windows GNU/LLVM
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  windows:
+    name: Rust, tests and portable package
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+      RUST_BACKTRACE: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned GNU/LLVM toolchain
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $text = [IO.File]::ReadAllText('rust-toolchain.toml')
+          $toolchain = [regex]::Match($text, 'channel\s*=\s*"([^"]+)"').Groups[1].Value
+          if ($toolchain -notmatch '^\d+\.\d+\.\d+-x86_64-pc-windows-gnullvm$') {
+            throw 'A pinned GNU/LLVM host toolchain is required.'
+          }
+          rustup toolchain install $toolchain --profile minimal --component rustfmt --component clippy --component rust-mingw
+          if ($LASTEXITCODE -ne 0) { throw 'Toolchain installation failed.' }
+          $compiler = rustup run $toolchain rustc -vV
+          if ($LASTEXITCODE -ne 0) { throw 'Compiler inspection failed.' }
+          $compiler
+          if ($compiler -notcontains 'host: x86_64-pc-windows-gnullvm') {
+            throw 'Unexpected compiler host.'
+          }
+
+      - name: Verify that a formatting error blocks the build
+        run: ./scripts/test-ci-guard.ps1
+
+      - name: Build debug
+        run: ./scripts/build.ps1 -Configuration Debug
+
+      - name: Format, Clippy, tests, release and portable smoke test
+        run: ./scripts/build.ps1 -Configuration Release -Check -Package
+
+      - name: Open synthetic DOCX from the portable package
+        run: |
+          $executables = @(Get-ChildItem -Path 'dist/paperik-*-windows-x64/paperik.exe' -File)
+          if ($executables.Count -ne 1) { throw 'Expected one portable executable.' }
+          ./scripts/test-standalone.ps1 -ExecutablePath $executables[0].FullName -DocumentPath tests/fixtures/formatting.docx
+
+      - name: Upload portable ZIP and checksum
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: paperik-windows-x64-${{ github.sha }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
