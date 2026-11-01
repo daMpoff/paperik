@@ -2,6 +2,107 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+#[test]
+#[ignore = "manual first-frame phase measurement in a fresh release test process"]
+fn first_frame_report() {
+    use windows::Win32::Graphics::Direct2D::*;
+    unsafe {
+        let started = Instant::now();
+        let dpi: u32 = std::env::var("PAPERIK_QA_RENDER_DPI")
+            .unwrap_or_else(|_| "96".into())
+            .parse()
+            .unwrap();
+        assert!(matches!(dpi, 96 | 192));
+        let class_name = windows_sys::w!("Paperik.FirstFrameProbe");
+        let instance = GetModuleHandleW(null());
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(procedure),
+            hInstance: instance,
+            lpszClassName: class_name,
+            ..Default::default()
+        };
+        assert_ne!(RegisterClassW(&class), 0);
+        let mut state = Box::new(State::empty(96.0));
+        let handle = CreateWindowExW(
+            0,
+            class_name,
+            TITLE,
+            WS_OVERLAPPEDWINDOW,
+            0,
+            0,
+            1320 * dpi as i32 / 96,
+            820 * dpi as i32 / 96,
+            null_mut(),
+            null_mut(),
+            instance,
+            (&mut *state as *mut State).cast(),
+        );
+        assert!(!handle.is_null());
+        let window = Window(handle);
+        let mut client = RECT::default();
+        GetClientRect(handle, &mut client);
+        state.dpi = dpi as f32;
+        state.width = client.right as f32 * 96.0 / state.dpi;
+        state.height = client.bottom as f32 * 96.0 / state.dpi;
+        let mode = std::env::var("PAPERIK_QA_RENDER_MODE").unwrap_or_else(|_| "production".into());
+        assert!(matches!(
+            mode.as_str(),
+            "production" | "default" | "default-immediate" | "software" | "software-immediate"
+        ));
+        let kind = if mode.starts_with("software") {
+            D2D1_RENDER_TARGET_TYPE_SOFTWARE
+        } else {
+            D2D1_RENDER_TARGET_TYPE_DEFAULT
+        };
+        let present = if mode.ends_with("immediate") {
+            D2D1_PRESENT_OPTIONS_IMMEDIATELY
+        } else {
+            D2D1_PRESENT_OPTIONS_NONE
+        };
+        let setup = started.elapsed().as_secs_f64() * 1000.0;
+        let timer = Instant::now();
+        let renderer = if mode == "production" {
+            Renderer::new(handle, client.right as u32, client.bottom as u32, state.dpi)
+        } else {
+            Renderer::with_options(
+                handle,
+                client.right as u32,
+                client.bottom as u32,
+                state.dpi,
+                kind,
+                present,
+            )
+        }
+        .unwrap();
+        let create_ms = timer.elapsed().as_secs_f64() * 1000.0;
+        let timer = Instant::now();
+        renderer
+            .resize(client.right as u32, client.bottom as u32, state.dpi)
+            .unwrap();
+        let resize_ms = timer.elapsed().as_secs_f64() * 1000.0;
+        let (scene, present) = renderer.measure_paint(&state.view()).unwrap();
+        let first_total = started.elapsed().as_secs_f64() * 1000.0;
+        let (second_scene, second_present) = renderer.measure_paint(&state.view()).unwrap();
+        let editor = Editor::new(
+            Document::from_bytes(
+                include_bytes!("../../../../tests/fixtures/formatting.docx").to_vec(),
+            )
+            .unwrap(),
+        );
+        state.layout = Some(renderer.document(editor.document()).unwrap());
+        state.zoom = render::fit_zoom(state.width, state.height, editor.document());
+        state.editor = Some(editor);
+        let (doc_scene, doc_present) = renderer.measure_paint(&state.view()).unwrap();
+        println!(
+            "FIRST_FRAME mode={mode} dpi={dpi} setup_ms={setup:.3} create_ms={create_ms:.3} resize_ms={resize_ms:.3} scene_ms={scene:.3} present_ms={present:.3} total_ms={first_total:.3} second_scene_ms={second_scene:.3} second_present_ms={second_present:.3} doc_scene_ms={doc_scene:.3} doc_present_ms={doc_present:.3}"
+        );
+        drop(renderer);
+        drop(window);
+        drop(state);
+        UnregisterClassW(class_name, instance);
+    }
+}
+
 unsafe fn drain(window: HWND, samples: &mut Vec<f64>) {
     let deadline = Instant::now() + Duration::from_secs(30);
     let pointer = unsafe { state_pointer(window) };

@@ -136,13 +136,32 @@ pub fn draw_page(target: &ID2D1RenderTarget, page: &layout::PageLayout, width: f
 
 impl Renderer {
     pub fn new(handle: *mut core::ffi::c_void, width: u32, height: u32, dpi: f32) -> Result<Self> {
+        // The current text UI paints on demand. Avoid per-process GPU-device startup
+        // and waiting for vertical refresh in the window's paint handler.
+        Self::with_options(
+            handle,
+            width,
+            height,
+            dpi,
+            D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+            D2D1_PRESENT_OPTIONS_IMMEDIATELY,
+        )
+    }
+    pub(super) fn with_options(
+        handle: *mut core::ffi::c_void,
+        width: u32,
+        height: u32,
+        dpi: f32,
+        kind: D2D1_RENDER_TARGET_TYPE,
+        present: D2D1_PRESENT_OPTIONS,
+    ) -> Result<Self> {
         // SAFETY: called on the owning UI thread with a live HWND.
         unsafe {
             let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let text: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let target = factory.CreateHwndRenderTarget(
                 &D2D1_RENDER_TARGET_PROPERTIES {
-                    r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                    r#type: kind,
                     pixelFormat: D2D1_PIXEL_FORMAT {
                         format: DXGI_FORMAT_UNKNOWN,
                         alphaMode: D2D1_ALPHA_MODE_UNKNOWN,
@@ -158,7 +177,7 @@ impl Renderer {
                         width: width.max(1),
                         height: height.max(1),
                     },
-                    presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+                    presentOptions: present,
                 },
             )?;
             Ok(Self {
@@ -243,15 +262,34 @@ impl Renderer {
         Ok(())
     }
     pub fn paint(&self, view: &View<'_>) -> Result<()> {
+        self.paint_with_phase_mark(view, || {})
+    }
+    fn paint_with_phase_mark(
+        &self,
+        view: &View<'_>,
+        mut scene_complete: impl FnMut(),
+    ) -> Result<()> {
         // SAFETY: all drawing happens between BeginDraw and EndDraw on one thread.
         unsafe {
             self.target.BeginDraw();
             self.target.SetTransform(&matrix(1.0, 0.0, 0.0));
         }
         let result = self.scene(view);
+        scene_complete();
         // Always close the draw even if allocating a resource failed.
         let end = unsafe { self.target.EndDraw(None, None) };
         result.and(end)
+    }
+    #[cfg(test)]
+    pub fn measure_paint(&self, view: &View<'_>) -> Result<(f64, f64)> {
+        let start = std::time::Instant::now();
+        let mut scene_ms = 0.0;
+        let mut present_start = start;
+        self.paint_with_phase_mark(view, || {
+            scene_ms = start.elapsed().as_secs_f64() * 1000.0;
+            present_start = std::time::Instant::now();
+        })?;
+        Ok((scene_ms, present_start.elapsed().as_secs_f64() * 1000.0))
     }
     fn scene(&self, v: &View<'_>) -> Result<()> {
         let background = if v.dark {
