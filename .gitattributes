@@ -1,0 +1,15 @@
+* text=auto
+*.md text eol=lf
+*.mdc text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.ps1 text eol=crlf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+*.docx binary
+*.pdf binary
+*.png binary

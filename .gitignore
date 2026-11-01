@@ -1,0 +1,36 @@
+# Rust и результаты сборки
+/target/
+/dist/
+/build/
+*.pdb
+
+# Личные документы, промежуточные данные и локальные результаты
+/local/
+/work/
+/outputs/
+*.docx
+*.doc
+*.docm
+*.dotx
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.log
+*.tmp
+~$*
+
+# Секреты и настройки компьютера
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Cargo.lock для приложения должен храниться в Git после появления workspace.
+# Проверенные синтетические бинарные фикстуры разрешаются адресно.
