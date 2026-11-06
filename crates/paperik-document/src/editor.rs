@@ -35,6 +35,8 @@ impl Selection {
 pub enum Edit {
     Insert(String),
     SoftBreak,
+    Table(crate::TableEdit),
+    Picture(crate::PictureEdit),
     Backspace { word: bool },
     Delete { word: bool },
     Undo,
@@ -87,9 +89,15 @@ fn byte_at(text: &str, offset: u32) -> usize {
 fn boundaries(text: &str) -> Vec<u32> {
     let mut result = vec![0];
     let mut length = 0;
-    for cluster in text.graphemes(true) {
-        length += utf16_len(cluster);
-        result.push(length);
+    for (index, segment) in text.split(crate::INLINE_OBJECT).enumerate() {
+        if index > 0 {
+            length += 1;
+            result.push(length);
+        }
+        for cluster in segment.graphemes(true) {
+            length += utf16_len(cluster);
+            result.push(length);
+        }
     }
     result
 }
@@ -142,6 +150,7 @@ fn slice_runs(paragraph: &Paragraph, start: u32, end: u32) -> Vec<Run> {
         if a < b {
             result.push(Run {
                 text: run.text[byte_at(&run.text, a)..byte_at(&run.text, b)].into(),
+                picture: run.picture.clone(),
                 font: run.font.clone(),
                 source: run.source,
             });
@@ -154,7 +163,7 @@ fn insertion_font(paragraph: &Paragraph, offset: u32) -> (Font, Option<(usize, u
     let mut end = 0;
     for run in &paragraph.runs {
         end += utf16_len(&run.text);
-        if offset <= end && !run.text.is_empty() {
+        if offset <= end && !run.text.is_empty() && run.picture.is_none() {
             return (run.font.clone(), run.source);
         }
     }
@@ -166,6 +175,8 @@ fn compact(runs: Vec<Run>) -> Vec<Run> {
         if let Some(last) = result.last_mut()
             && last.font == run.font
             && last.source == run.source
+            && last.picture.is_none()
+            && run.picture.is_none()
         {
             last.text.push_str(&run.text);
         } else {
@@ -192,6 +203,17 @@ fn renumber(document: &mut Document) {
     }
 }
 fn validate(document: &Document) -> Result<(), String> {
+    let mut pictures = std::collections::BTreeSet::new();
+    for run in document
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.runs)
+        .filter(|r| r.picture.is_some())
+    {
+        if run.text != "\u{fffc}" || !run.source.is_some_and(|source| pictures.insert(source)) {
+            return Err("Рисунок не связан с уникальной позицией документа".into());
+        }
+    }
     if document.paragraphs.len() > MAX_PARAGRAPHS
         || document
             .paragraphs
@@ -233,6 +255,34 @@ fn snapshot_bytes(snapshot: &Snapshot) -> usize {
                     .as_ref()
                     .map_or(0, |l| 64 + l.id.len() + l.pattern.len())
                 + p.list_label.as_ref().map_or(0, String::len)
+        })
+        .sum::<usize>()
+        + snapshot
+            .document
+            .content
+            .as_ref()
+            .map_or(0, |content| content.owned_bytes())
+}
+fn history_bytes<'a>(history: impl IntoIterator<Item = &'a Snapshot>) -> usize {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut seen_picture_parts = std::collections::BTreeSet::new();
+    history
+        .into_iter()
+        .map(|snapshot| {
+            let main = snapshot.document.package.main.as_ref().map_or(0, |part| {
+                if seen.insert(Arc::as_ptr(part)) {
+                    part.xml.len()
+                        + part
+                            .parts
+                            .values()
+                            .filter(|bytes| seen_picture_parts.insert(Arc::as_ptr(bytes)))
+                            .map(|bytes| bytes.len())
+                            .sum::<usize>()
+                } else {
+                    0
+                }
+            });
+            snapshot_bytes(snapshot) + main
         })
         .sum()
 }
@@ -345,7 +395,7 @@ impl Editor {
                 } else {
                     text.len()
                 };
-                text[a..b].to_owned()
+                text[a..b].replace(crate::INLINE_OBJECT, "")
             })
             .collect::<Vec<_>>()
             .join("\r\n")
@@ -388,7 +438,48 @@ impl Editor {
             revision: self.revision,
         }
     }
+    fn prepare_structure(
+        &self,
+        mut document: Document,
+        mut focus: Position,
+    ) -> Result<Option<PendingChange>, String> {
+        validate(&document)?;
+        renumber(&mut document);
+        let text = document
+            .paragraphs
+            .get(focus.paragraph)
+            .ok_or("Нет позиции правки")?
+            .text();
+        focus.offset = snap(&text, focus.offset);
+        Ok(Some(PendingChange {
+            document,
+            selection: Selection {
+                anchor: focus,
+                focus,
+            },
+            generation: self.generation,
+            revision: self.next_revision,
+            kind: ChangeKind::New,
+        }))
+    }
     pub fn prepare(&self, edit: Edit) -> Result<Option<PendingChange>, String> {
+        match edit {
+            Edit::Table(edit) => {
+                let (document, paragraph) = self.document.edit_table(edit)?;
+                return self.prepare_structure(
+                    document,
+                    Position {
+                        paragraph,
+                        offset: 0,
+                    },
+                );
+            }
+            Edit::Picture(edit) => {
+                let (document, paragraph) = self.document.edit_picture(edit)?;
+                return self.prepare_structure(document, paragraph);
+            }
+            _ => {}
+        }
         let (kind, history) = match edit {
             Edit::Undo => (ChangeKind::Undo, self.undo.back()),
             Edit::Redo => (ChangeKind::Redo, self.redo.back()),
@@ -421,11 +512,12 @@ impl Editor {
                 }
                 String::new()
             }
-            Edit::Undo | Edit::Redo => unreachable!(),
+            Edit::Undo | Edit::Redo | Edit::Table(_) | Edit::Picture(_) => unreachable!(),
         };
         if input.len() > MAX_TEXT
             || input.chars().any(|c| {
-                (c.is_control() && c != '\n' && c != '\t') || matches!(c, '\u{fffe}' | '\u{ffff}')
+                (c.is_control() && c != '\n' && c != '\t')
+                    || matches!(c, crate::INLINE_OBJECT | '\u{fffe}' | '\u{ffff}')
             })
         {
             return Err(
@@ -435,6 +527,28 @@ impl Editor {
         let (start, end) = selection.range();
         if start == end && input.is_empty() {
             return Ok(None);
+        }
+        for (index, paragraph) in self.document.paragraphs[start.paragraph..=end.paragraph]
+            .iter()
+            .enumerate()
+        {
+            let index = index + start.paragraph;
+            let from = if index == start.paragraph {
+                start.offset
+            } else {
+                0
+            };
+            let to = if index == end.paragraph {
+                end.offset
+            } else {
+                u32::MAX
+            };
+            if paragraph
+                .inline_pictures()
+                .any(|(offset, _, _)| (from..to).contains(&offset))
+            {
+                return Err("Чтобы удалить рисунок, воспользуйтесь его контекстным меню".into());
+            }
         }
         let breaks = if soft {
             0
@@ -457,6 +571,13 @@ impl Editor {
             .find_map(|p| p.edit_block)
         {
             return Err(format!("Этот абзац доступен только для чтения: {reason}"));
+        }
+        if let Some(content) = &self.document.content {
+            content.check_edit(
+                self.document.paragraphs.len(),
+                start.paragraph,
+                end.paragraph,
+            )?;
         }
         let mut document = self.document.as_ref().clone();
         let first = &self.document.paragraphs[start.paragraph];
@@ -483,6 +604,7 @@ impl Editor {
             }
             paragraph.runs.push(Run {
                 text: (*text).into(),
+                picture: None,
                 font: font.clone(),
                 source,
             });
@@ -499,6 +621,10 @@ impl Editor {
         document
             .paragraphs
             .splice(start.paragraph..=end.paragraph, replacements);
+        if let Some(content) = &self.document.content {
+            document.content =
+                Some(content.rebind(&self.document.paragraphs, &document.paragraphs)?);
+        }
         validate(&document)?;
         renumber(&mut document);
         if document.paragraphs == self.document.paragraphs {
@@ -547,13 +673,7 @@ impl Editor {
             self.selection.anchor = self.selection.focus;
         }
         while self.undo.len() + self.redo.len() > MAX_HISTORY
-            || self
-                .undo
-                .iter()
-                .chain(&self.redo)
-                .map(snapshot_bytes)
-                .sum::<usize>()
-                > HISTORY_BYTES
+            || history_bytes(self.undo.iter().chain(&self.redo)) > HISTORY_BYTES
         {
             if self.undo.pop_front().is_none() {
                 self.redo.pop_front();
@@ -645,11 +765,13 @@ mod tests {
         Arc::make_mut(&mut e.document).paragraphs[0].runs = vec![
             Run {
                 text: "abc".into(),
+                picture: None,
                 font: Font::default(),
                 source: None,
             },
             Run {
                 text: "def".into(),
+                picture: None,
                 font: Font {
                     italic: true,
                     ..Font::default()

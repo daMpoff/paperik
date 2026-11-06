@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+type Pictures = Arc<Mutex<BTreeMap<String, Arc<Vec<u8>>>>>;
 
 const MAX_FILE: usize = 32 * 1024 * 1024;
-const MAX_PART: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_PART: usize = 16 * 1024 * 1024;
 const MAX_TOTAL: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
@@ -20,7 +21,18 @@ struct Entry {
 #[derive(Debug, Clone)]
 pub struct Package {
     pub original: Arc<[u8]>,
-    entries: BTreeMap<String, Entry>,
+    entries: Arc<BTreeMap<String, Entry>>,
+    pub(crate) main: Option<Arc<MainPart>>,
+    pictures: Pictures,
+}
+
+pub(crate) type PictureParts = BTreeMap<String, Arc<Vec<u8>>>;
+
+#[derive(Debug)]
+pub(crate) struct MainPart {
+    pub name: String,
+    pub xml: String,
+    pub parts: PictureParts,
 }
 
 fn u16_at(data: &[u8], offset: usize) -> Result<u16, String> {
@@ -137,21 +149,120 @@ impl Package {
         }
         Ok(Self {
             original: Arc::from(data),
-            entries,
+            entries: Arc::new(entries),
+            main: None,
+            pictures: Pictures::default(),
         })
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.entries.contains_key(name)
+        self.extra(name).is_some() || self.entries.contains_key(name)
     }
 
     pub fn text(&self, name: &str) -> Result<String, String> {
         String::from_utf8(self.bytes(name)?).map_err(|_| "XML части не в UTF-8".into())
     }
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.entries.keys().map(String::as_str)
+        self.entries.keys().map(String::as_str).chain(
+            self.main
+                .iter()
+                .flat_map(|p| p.parts.keys())
+                .filter(|name| !self.entries.contains_key(*name))
+                .map(String::as_str),
+        )
     }
+    pub(crate) fn picture_bytes(&self, name: &str) -> Result<Arc<Vec<u8>>, String> {
+        if let Some(bytes) = self.extra(name) {
+            return Ok(bytes.clone());
+        }
+        let mut pictures = self
+            .pictures
+            .lock()
+            .map_err(|_| "Недоступен кэш рисунков")?;
+        if let Some(bytes) = pictures.get(name) {
+            return Ok(bytes.clone());
+        }
+        let bytes = Arc::new(self.original_bytes(name)?);
+        pictures.insert(name.to_owned(), bytes.clone());
+        Ok(bytes)
+    }
+    fn extra(&self, name: &str) -> Option<&Arc<Vec<u8>>> {
+        self.main.as_ref()?.parts.get(name)
+    }
+    pub(crate) fn with_main(&self, name: String, xml: String) -> Result<Self, String> {
+        let parts = self
+            .main
+            .as_ref()
+            .map_or_else(BTreeMap::new, |p| p.parts.clone());
+        self.with_picture_parts(name, xml, parts)
+    }
+    pub(crate) fn with_picture_parts(
+        &self,
+        name: String,
+        xml: String,
+        parts: PictureParts,
+    ) -> Result<Self, String> {
+        if self
+            .names()
+            .any(|n| n.to_ascii_lowercase().starts_with("_xmlsignatures/"))
+        {
+            return Err("Изменение DOCX с цифровой подписью пока не поддерживается".into());
+        }
+        let previous = self.entries.get(&name).ok_or("Нет основной части DOCX")?;
+        let relationships = crate::part_relationships(&name);
+        let mut total = self
+            .entries
+            .values()
+            .map(|entry| entry.unpacked)
+            .sum::<usize>()
+            - previous.unpacked
+            + xml.len();
+        let mut count = self.entries.len();
+        for (part, bytes) in &parts {
+            if (part != &relationships
+                && part != "[Content_Types].xml"
+                && !owned_picture_name(part))
+                || bytes.len() > MAX_PART
+            {
+                return Err("Некорректная часть рисунка DOCX".into());
+            }
+            total += bytes.len();
+            if let Some(entry) = self.entries.get(part) {
+                if owned_picture_name(part) {
+                    return Err("Имя нового рисунка совпадает с исходной частью".into());
+                }
+                total -= entry.unpacked;
+            } else {
+                if self
+                    .entries
+                    .keys()
+                    .any(|existing| existing.eq_ignore_ascii_case(part))
+                {
+                    return Err("Имя части совпадает с исходной частью".into());
+                }
+                count += 1;
+            }
+        }
+        if xml.len() > MAX_PART || total > MAX_TOTAL || count > 2048 {
+            return Err("Превышен предел размера изменённого DOCX".into());
+        }
+        let mut result = self.clone();
+        result.main = Some(Arc::new(MainPart { name, xml, parts }));
+        Ok(result)
+    }
+
     pub fn bytes(&self, name: &str) -> Result<Vec<u8>, String> {
+        if let Some(part) = &self.main
+            && part.name == name
+        {
+            return Ok(part.xml.as_bytes().to_vec());
+        }
+        if let Some(bytes) = self.extra(name) {
+            return Ok(bytes.as_ref().clone());
+        }
+        self.original_bytes(name)
+    }
+    fn original_bytes(&self, name: &str) -> Result<Vec<u8>, String> {
         let entry = self
             .entries
             .get(name)
@@ -196,10 +307,25 @@ impl Package {
         }
         let mut output = Vec::new();
         let mut central = Vec::new();
-        for (name, entry) in &self.entries {
+        let mut count = 0u16;
+        for name in self.names() {
+            count += 1;
+            let entry = self.entries.get(name);
             // Validate even opaque binary parts; corrupt data must not be republished silently.
-            let original = self.bytes(name)?;
-            let (encoded, method, crc, unpacked) = if let Some(bytes) = changes.get(name) {
+            if entry.is_some() {
+                self.original_bytes(name)?;
+            }
+            let replacement = changes
+                .get(name)
+                .map(Vec::as_slice)
+                .or_else(|| {
+                    self.main
+                        .as_ref()
+                        .filter(|part| part.name == name)
+                        .map(|part| part.xml.as_bytes())
+                })
+                .or_else(|| self.extra(name).map(|bytes| bytes.as_slice()));
+            let (encoded, method, crc, unpacked) = if let Some(bytes) = replacement {
                 if bytes.len() > MAX_PART {
                     return Err("Изменённая часть DOCX превышает 16 МиБ".into());
                 }
@@ -213,6 +339,7 @@ impl Package {
                     bytes.len(),
                 )
             } else {
+                let entry = entry.ok_or("Не найдена часть изменённого пакета")?;
                 let start = entry.offset
                     + 30
                     + usize::from(u16_at(&self.original, entry.offset + 26)?)
@@ -221,7 +348,7 @@ impl Package {
                     self.original[start..start + entry.packed].to_vec(),
                     entry.method,
                     entry.crc,
-                    original.len(),
+                    entry.unpacked,
                 )
             };
             let offset = output.len() as u32;
@@ -261,8 +388,8 @@ impl Package {
         output.extend(central);
         output.extend_from_slice(b"PK\x05\x06");
         output.extend([0u8; 4]);
-        output.extend((self.entries.len() as u16).to_le_bytes());
-        output.extend((self.entries.len() as u16).to_le_bytes());
+        output.extend(count.to_le_bytes());
+        output.extend(count.to_le_bytes());
         output.extend(size.to_le_bytes());
         output.extend(offset.to_le_bytes());
         output.extend(0u16.to_le_bytes());
@@ -272,4 +399,14 @@ impl Package {
         Self::parse(output.clone())?;
         Ok(output)
     }
+}
+
+pub(crate) fn owned_picture_name(name: &str) -> bool {
+    name.strip_prefix("word/media/paperik-image-")
+        .and_then(|name| name.split_once('.'))
+        .is_some_and(|(number, extension)| {
+            !number.is_empty()
+                && number.bytes().all(|b| b.is_ascii_digit())
+                && matches!(extension, "png" | "jpg")
+        })
 }

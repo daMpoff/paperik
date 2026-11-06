@@ -2,6 +2,8 @@
 use super::*;
 use std::io::{Read, Write};
 const MAGIC: &[u8; 16] = b"PAPERIK-SESSION\x01";
+const PICTURE_MAGIC: &[u8; 16] = b"PAPERIK-SESSION\x03";
+const TABLE_MAGIC: &[u8; 16] = b"PAPERIK-SESSION\x02";
 const MAX_DECODED: usize = 128 * 1024 * 1024;
 pub const MAX_CHECKPOINT: usize = 64 * 1024 * 1024;
 
@@ -206,6 +208,7 @@ impl<'a> Decoder<'a> {
                 {
                     return Err("Некорректный текст сессии".into());
                 }
+                let mut picture = None;
                 let source = if p == u32::MAX && r == u32::MAX {
                     None
                 } else {
@@ -217,9 +220,18 @@ impl<'a> Decoder<'a> {
                     if old.is_none_or(|old| old.font != font) {
                         return Err("Оформление сессии не соответствует исходному фрагменту".into());
                     }
+                    picture = old.and_then(|run| run.picture.clone());
+                    if picture.is_some() && text != crate::INLINE_OBJECT.to_string() {
+                        return Err("Повреждён рисунок сессии".into());
+                    }
                     Some((p as usize, r as usize))
                 };
-                paragraph.runs.push(Run { text, font, source });
+                paragraph.runs.push(Run {
+                    text,
+                    font,
+                    source,
+                    picture,
+                });
             }
             total = total
                 .checked_add(length)
@@ -231,6 +243,9 @@ impl<'a> Decoder<'a> {
         }
         let mut document = baseline.clone();
         document.paragraphs = paragraphs;
+        if let Some(content) = &baseline.content {
+            document.content = Some(content.rebind(&baseline.paragraphs, &document.paragraphs)?);
+        }
         renumber(&mut document);
         for position in [selection.anchor, selection.focus] {
             let p = document
@@ -273,12 +288,73 @@ impl Editor {
         let mut out = Encoder(Vec::new());
         out.string(name)?;
         out.bytes(&self.document.package.original)?;
+        let mut parts = Vec::new();
+        let mut ids = BTreeMap::new();
+        for document in std::iter::once(self.document.as_ref()).chain(
+            self.undo
+                .iter()
+                .chain(&self.redo)
+                .map(|s| s.document.as_ref()),
+        ) {
+            if let Some(part) = &document.package.main {
+                let address = Arc::as_ptr(part);
+                if let std::collections::btree_map::Entry::Vacant(entry) = ids.entry(address) {
+                    parts.push(part);
+                    entry.insert(parts.len() as u32);
+                }
+            }
+        }
+        let picture_version = parts.iter().any(|p| !p.parts.is_empty());
+        let structural = !parts.is_empty();
+        let mut part_bytes = BTreeMap::new();
+        if picture_version {
+            let mut pool = Vec::new();
+            for bytes in parts.iter().flat_map(|part| part.parts.values()) {
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    part_bytes.entry(Arc::as_ptr(bytes))
+                {
+                    entry.insert(pool.len() as u32);
+                    pool.push(bytes);
+                }
+            }
+            out.u32(pool.len() as u32);
+            for bytes in pool {
+                out.bytes(bytes)?;
+            }
+        }
+        if structural {
+            out.u32(parts.len() as u32);
+            for part in parts {
+                out.string(&part.xml)?;
+                if picture_version {
+                    out.u32(part.parts.len() as u32);
+                    for (name, bytes) in &part.parts {
+                        out.string(name)?;
+                        out.u32(part_bytes[&Arc::as_ptr(bytes)]);
+                    }
+                }
+            }
+        }
+        let write_basis = |out: &mut Encoder, document: &Document| {
+            if structural {
+                out.u32(
+                    document
+                        .package
+                        .main
+                        .as_ref()
+                        .map_or(0, |p| ids[&Arc::as_ptr(p)]),
+                );
+            }
+        };
+
         out.u64(self.saved_revision);
         out.u64(self.next_revision);
+        write_basis(&mut out, &self.document);
         out.frame(&self.document, self.selection, self.revision)?;
         for history in [&self.undo, &self.redo] {
             out.u32(history.len() as u32);
             for snapshot in history {
+                write_basis(&mut out, &snapshot.document);
                 out.frame(&snapshot.document, snapshot.selection, snapshot.revision)?;
             }
         }
@@ -286,7 +362,14 @@ impl Editor {
             flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
         compressor.write_all(&out.0).map_err(|e| e.to_string())?;
         let payload = compressor.finish().map_err(|e| e.to_string())?;
-        let mut result = MAGIC.to_vec();
+        let mut result = if picture_version {
+            PICTURE_MAGIC
+        } else if structural {
+            TABLE_MAGIC
+        } else {
+            MAGIC
+        }
+        .to_vec();
         result.extend((out.0.len() as u32).to_le_bytes());
         result.extend(crate::package::crc32(&out.0).to_le_bytes());
         result.extend((payload.len() as u32).to_le_bytes());
@@ -296,7 +379,10 @@ impl Editor {
         }
         let (check, _) = Self::from_checkpoint(&result)?;
         let same = |a: &Document, b: &Document| {
-            a.paragraphs == b.paragraphs
+            a.package.main.as_ref().map(|p| (&p.xml, &p.parts))
+                == b.package.main.as_ref().map(|p| (&p.xml, &p.parts))
+                && a.content == b.content
+                && a.paragraphs == b.paragraphs
                 && a.footer == b.footer
                 && a.page == b.page
                 && a.tab_stop == b.tab_stop
@@ -326,7 +412,7 @@ impl Editor {
     pub fn from_checkpoint(bytes: &[u8]) -> Result<(Self, String), String> {
         if bytes.len() < 28
             || bytes.len() > MAX_CHECKPOINT
-            || bytes.get(..16) != Some(MAGIC.as_slice())
+            || !matches!(bytes.get(..16), Some(magic) if magic == MAGIC || magic == TABLE_MAGIC || magic == PICTURE_MAGIC)
         {
             return Err("Неизвестная версия или повреждённый формат сессии".into());
         }
@@ -363,13 +449,67 @@ impl Editor {
         {
             return Err("Некорректное имя сессии".into());
         }
-        let baseline = Editor::new(Document::from_bytes(
-            reader.bytes(32 * 1024 * 1024)?.to_vec(),
-        )?)
-        .document;
+        let package = crate::Package::parse(reader.bytes(32 * 1024 * 1024)?.to_vec())?;
+        let picture_version = bytes.get(..16) == Some(PICTURE_MAGIC.as_slice());
+        let structural = picture_version || bytes.get(..16) == Some(TABLE_MAGIC.as_slice());
+        let mut pool = Vec::new();
+        if picture_version {
+            let count = reader.u32()? as usize;
+            if count == 0 || count > (MAX_HISTORY + 1) * 66 {
+                return Err("Некорректное число частей рисунков в сессии".into());
+            }
+            for _ in 0..count {
+                pool.push(Arc::new(reader.bytes(crate::package::MAX_PART)?.to_vec()));
+            }
+        }
+        let mut bases = vec![package.clone()];
+        if structural {
+            let count = reader.u32()? as usize;
+            if count == 0 || count > MAX_HISTORY + 1 {
+                return Err("Некорректное число структурных версий документа".into());
+            }
+            let main = crate::relationship(&package, "_rels/.rels", "", "officeDocument")?
+                .ok_or("Не найдена основная часть DOCX")?;
+            for _ in 0..count {
+                let xml = reader.string(16 * 1024 * 1024)?;
+                let mut parts = BTreeMap::new();
+                if picture_version {
+                    let count = reader.u32()? as usize;
+                    if count > 66 {
+                        return Err("Слишком много частей рисунков в версии документа".into());
+                    }
+                    for _ in 0..count {
+                        let name = reader.string(4096)?;
+                        let id = reader.u32()? as usize;
+                        let bytes = pool.get(id).ok_or("В сессии не найдена часть рисунка")?;
+                        if parts.insert(name, bytes.clone()).is_some() {
+                            return Err("Повторяющаяся часть рисунка в сессии".into());
+                        }
+                    }
+                }
+                bases.push(package.with_picture_parts(main.clone(), xml, parts)?);
+            }
+        }
+        let mut cached_basis: Option<(usize, Arc<Document>)> = None;
+        let mut read_frame = |reader: &mut Decoder<'_>| {
+            let id = if structural {
+                reader.u32()? as usize
+            } else {
+                0
+            };
+            if cached_basis.as_ref().is_none_or(|(index, _)| *index != id) {
+                let package = bases
+                    .get(id)
+                    .ok_or("Структурная версия документа не найдена в сессии")?;
+                let basis = Document::from_package(package.clone())?;
+                validate(&basis)?;
+                cached_basis = Some((id, Editor::new(basis).document));
+            }
+            reader.frame(&cached_basis.as_ref().unwrap().1)
+        };
         let saved_revision = reader.u64()?;
         let next_revision = reader.u64()?;
-        let current = reader.frame(&baseline)?;
+        let current = read_frame(&mut reader)?;
         let mut history_bytes = 0usize;
         let mut read_history = || -> Result<VecDeque<Snapshot>, String> {
             let count = reader.u32()? as usize;
@@ -378,7 +518,7 @@ impl Editor {
             }
             let mut history = VecDeque::new();
             for _ in 0..count {
-                let snapshot = reader.frame(&baseline)?;
+                let snapshot = read_frame(&mut reader)?;
                 history_bytes = history_bytes
                     .checked_add(snapshot_bytes(&snapshot))
                     .ok_or("История слишком велика")?;
@@ -401,7 +541,7 @@ impl Editor {
         if reader.position != payload.len()
             || next_revision <= largest
             || undo.len() + redo.len() > MAX_HISTORY
-            || undo.iter().chain(&redo).map(snapshot_bytes).sum::<usize>() > HISTORY_BYTES
+            || super::history_bytes(undo.iter().chain(&redo)) > HISTORY_BYTES
         {
             return Err("Некорректная история или лишние данные сессии".into());
         }
@@ -494,7 +634,7 @@ mod tests {
         corrupt[20] ^= 1;
         assert!(Editor::from_checkpoint(&corrupt).is_err());
         let mut unknown = bytes.clone();
-        unknown[15] = 2;
+        unknown[15] = 4;
         assert!(Editor::from_checkpoint(&unknown).is_err());
         let mut oversized = bytes;
         oversized[16..20].copy_from_slice(&u32::MAX.to_le_bytes());

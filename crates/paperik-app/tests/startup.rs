@@ -4,6 +4,25 @@ use std::time::{Duration, Instant};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_paperik");
 
+#[cfg(target_os = "windows")]
+#[test]
+fn tables_and_picture_open_without_changing_the_source() {
+    let bytes = include_bytes!("../../../tests/fixtures/blocks.docx");
+    let fixture = Fixture::new(bytes);
+    let output = Command::new(BINARY)
+        .arg("--smoke-test")
+        .arg(&fixture.file)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Отображено страниц:"));
+    assert_eq!(std::fs::read(&fixture.file).unwrap(), bytes);
+}
+
 struct Fixture {
     directory: std::path::PathBuf,
     file: std::path::PathBuf,

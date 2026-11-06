@@ -1,10 +1,14 @@
 //! Paperik's document model and bounded DOCX reader. No office engine is used.
+mod blocks;
 pub mod editor;
 mod package;
+pub use blocks::{Block, Border, InlineRaster, Picture, Table, TableCell, TableRow, ViewContent};
 mod save;
 
+pub use blocks::VerticalMerge;
 pub use package::Package;
 use roxmltree::{Document as Xml, Node};
+pub use save::{PictureAction, PictureEdit, TableAction, TableEdit};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::Path;
@@ -101,6 +105,7 @@ impl Default for ParagraphStyle {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub text: String,
+    pub picture: Option<InlineRaster>,
     pub font: Font,
     /// Original paragraph/run coordinates; formatting XML stays in the source.
     pub source: Option<(usize, usize)>,
@@ -126,7 +131,20 @@ pub struct ListSpec {
     pub pattern: String,
     pub decimal: bool,
 }
+pub const INLINE_OBJECT: char = '\u{fffc}';
+
 impl Paragraph {
+    pub fn inline_pictures(&self) -> impl Iterator<Item = (u32, &Run, &InlineRaster)> {
+        self.runs
+            .iter()
+            .scan(0u32, |offset, run| {
+                let start = *offset;
+                *offset += run.text.encode_utf16().count() as u32;
+                Some((start, run))
+            })
+            .filter_map(|(start, run)| Some((start, run, run.picture.as_ref()?)))
+    }
+
     pub fn text(&self) -> String {
         self.runs.iter().map(|r| r.text.as_str()).collect()
     }
@@ -159,6 +177,7 @@ impl Default for Page {
 #[derive(Clone, Debug)]
 pub struct Document {
     pub package: Package,
+    pub content: Option<ViewContent>,
     pub paragraphs: Vec<Paragraph>,
     pub footer: Vec<Paragraph>,
     pub page: Page,
@@ -329,7 +348,11 @@ struct Styles<'a> {
     default_id: String,
 }
 impl Styles<'_> {
-    fn resolve(&self, id: &str) -> Result<(Font, ParagraphStyle), String> {
+    fn resolve_in_table(
+        &self,
+        id: &str,
+        table: Option<&str>,
+    ) -> Result<(Font, ParagraphStyle), String> {
         let defaults = self.xml.descendants().find(|n| is(*n, "docDefaults"));
         let mut font = font_properties(
             Font::default(),
@@ -344,26 +367,26 @@ impl Styles<'_> {
                 .and_then(|n| child(n, "pPrDefault"))
                 .and_then(|n| child(n, "pPr")),
         );
-        let mut chain = Vec::new();
-        let mut visited = BTreeSet::new();
-        let mut current = id;
-        while !current.is_empty() {
-            if !visited.insert(current) || chain.len() > 64 {
-                return Err("Цикл наследования стилей".into());
+        for initial in table.into_iter().chain(std::iter::once(id)) {
+            let mut chain = Vec::new();
+            let mut visited = BTreeSet::new();
+            let mut current = initial;
+            while !current.is_empty() {
+                if !visited.insert(current) || chain.len() > 64 {
+                    return Err("Цикл наследования стилей".into());
+                }
+                let style = self
+                    .xml
+                    .descendants()
+                    .find(|n| is(*n, "style") && attr(*n, "styleId") == Some(current))
+                    .ok_or_else(|| format!("Не найден стиль {current}"))?;
+                chain.push(style);
+                current = val(style, "basedOn").unwrap_or("");
             }
-            let Some(style) = self
-                .xml
-                .descendants()
-                .find(|n| is(*n, "style") && attr(*n, "styleId") == Some(current))
-            else {
-                return Err(format!("Не найден стиль {current}"));
-            };
-            chain.push(style);
-            current = val(style, "basedOn").unwrap_or("");
-        }
-        for style in chain.into_iter().rev() {
-            font = font_properties(font, child(style, "rPr"), self.theme);
-            paragraph = paragraph_properties(paragraph, child(style, "pPr"));
+            for style in chain.into_iter().rev() {
+                font = font_properties(font, child(style, "rPr"), self.theme);
+                paragraph = paragraph_properties(paragraph, child(style, "pPr"));
+            }
         }
         Ok((font, paragraph))
     }
@@ -411,6 +434,12 @@ fn resolve_target(base: &str, target: &str) -> Result<String, String> {
     }
     Ok(components.join("/"))
 }
+fn part_relationships(part: &str) -> String {
+    match part.rsplit_once('/') {
+        Some((directory, name)) => format!("{directory}/_rels/{name}.rels"),
+        None => format!("_rels/{part}.rels"),
+    }
+}
 fn relationship(
     package: &Package,
     rel_path: &str,
@@ -443,12 +472,13 @@ fn read_paragraphs(
     styles: &Styles<'_>,
     numbering: Option<&Xml<'_>>,
     warnings: &mut BTreeSet<String>,
+    pictures: Option<(&Package, &str, &str)>,
 ) -> Result<Vec<Paragraph>, String> {
     let mut result = Vec::new();
     let mut counters: BTreeMap<(String, String), u32> = BTreeMap::new();
     for (paragraph_index, node) in xml
         .descendants()
-        .filter(|n| is(*n, "p") && !n.ancestors().any(|a| is(a, "tbl") || is(a, "txbxContent")))
+        .filter(|n| is(*n, "p") && !n.ancestors().any(|a| is(a, "txbxContent")))
         .enumerate()
     {
         let props = child(node, "pPr");
@@ -456,7 +486,12 @@ fn read_paragraphs(
             .and_then(|p| val(p, "pStyle"))
             .unwrap_or(&styles.default_id)
             .to_owned();
-        let (base_font, base_paragraph) = styles.resolve(&style_id)?;
+        let table_style = node
+            .ancestors()
+            .find(|n| is(*n, "tbl"))
+            .and_then(|n| child(n, "tblPr"))
+            .and_then(|n| val(n, "tblStyle"));
+        let (base_font, base_paragraph) = styles.resolve_in_table(&style_id, table_style)?;
         let mut paragraph_style = base_paragraph;
         let mut label = None;
         let mut list = None;
@@ -523,13 +558,18 @@ fn read_paragraphs(
             }
         }
         paragraph_style = paragraph_properties(paragraph_style, props);
-        let mark_font = font_properties(
-            base_font.clone(),
-            props.and_then(|p| child(p, "rPr")),
-            styles.theme,
-        );
+        let mark_properties = props.and_then(|p| child(p, "rPr"));
+        let mark_font = if let Some(id) = mark_properties.and_then(|p| val(p, "rStyle")) {
+            styles.character(base_font.clone(), id)?
+        } else {
+            base_font.clone()
+        };
+        let mark_font = font_properties(mark_font, mark_properties, styles.theme);
         let mut runs = Vec::new();
         let mut page_field = false;
+        let drawings: Vec<_> = blocks::drawings(node).collect();
+        let standalone = blocks::standalone(node);
+        let mut loaded = 0;
         for (run_index, run) in node.descendants().filter(|n| is(*n, "r")).enumerate() {
             let rprops = child(run, "rPr");
             if rprops.and_then(|p| child(p, "vanish")).is_some_and(enabled) {
@@ -553,6 +593,29 @@ fn read_paragraphs(
                         );
                     }
                     text.push('\n');
+                } else if is(element, "drawing") && !standalone {
+                    let (package, main, rel_path) =
+                        pictures.ok_or("Рисунки в колонтитулах пока не поддерживаются")?;
+                    if !text.is_empty() {
+                        runs.push(Run {
+                            text: std::mem::take(&mut text),
+                            font: font.clone(),
+                            source: Some((paragraph_index, run_index)),
+                            picture: None,
+                        });
+                    }
+                    let ordinal = drawings
+                        .iter()
+                        .position(|n| *n == element)
+                        .ok_or("Не найден рисунок абзаца")?;
+                    let raster = blocks::read_raster(element, package, main, rel_path)?;
+                    runs.push(Run {
+                        text: INLINE_OBJECT.to_string(),
+                        font: font.clone(),
+                        source: Some((paragraph_index, blocks::DRAWING_SOURCE + ordinal)),
+                        picture: Some(raster),
+                    });
+                    loaded += 1;
                 } else if is(element, "instrText")
                     && element
                         .text()
@@ -570,8 +633,12 @@ fn read_paragraphs(
                     text,
                     font,
                     source: Some((paragraph_index, run_index)),
+                    picture: None,
                 });
             }
+        }
+        if !standalone && loaded != drawings.len() {
+            return Err("Не удалось безопасно прочитать рисунок абзаца".into());
         }
         if runs.iter().map(|r| r.text.len()).sum::<usize>() > 200_000 {
             return Err("Абзац слишком большой для просмотра".into());
@@ -602,7 +669,9 @@ impl Document {
         Self::from_bytes(bytes)
     }
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, String> {
-        let package = Package::parse(bytes)?;
+        Self::from_package(Package::parse(bytes)?)
+    }
+    pub(crate) fn from_package(package: Package) -> Result<Self, String> {
         let main = relationship(&package, "_rels/.rels", "", "officeDocument")?
             .ok_or("Пакет не содержит документ Word")?;
         let content_types = package.text("[Content_Types].xml")?;
@@ -614,8 +683,7 @@ impl Document {
         }) {
             return Err("Поддерживаются DOCX без макросов".into());
         }
-        let (directory, name) = main.rsplit_once('/').unwrap_or(("", ""));
-        let rel_path = format!("{directory}/_rels/{name}.rels");
+        let rel_path = part_relationships(&main);
         let style_part = relationship(&package, &rel_path, &main, "styles")?;
         let style_source = if let Some(path) = style_part {
             package.text(&path)?
@@ -671,8 +739,6 @@ impl Document {
             .map_err(|e| e.to_string())?;
         let mut warnings = BTreeSet::new();
         for (tag, label) in [
-            ("tbl", "таблицы"),
-            ("drawing", "рисунки"),
             ("txbxContent", "текстовые блоки"),
             ("headerReference", "верхние колонтитулы"),
             ("footnoteReference", "сноски"),
@@ -741,7 +807,32 @@ impl Document {
         {
             return Err("Недопустимые размеры страницы или полей".into());
         }
-        let paragraphs = read_paragraphs(&xml, &styles, numbering.as_ref(), &mut warnings)?;
+        if xml.descendants().filter(|n| is(*n, "drawing")).count() > 64 {
+            return Err("Слишком много рисунков (предел — 64)".into());
+        }
+        let mut paragraphs = read_paragraphs(
+            &xml,
+            &styles,
+            numbering.as_ref(),
+            &mut warnings,
+            Some((&package, &main, &rel_path)),
+        )?;
+        let content = blocks::read(&xml, &styles_xml, &package, &main, &rel_path)?;
+        if let Some(content) = &content {
+            for table in content.blocks.iter().filter_map(|block| match block {
+                Block::Table(table) => Some(table),
+                _ => None,
+            }) {
+                for cell in table.rows.iter().flat_map(|row| &row.cells) {
+                    if cell.merge == Some(VerticalMerge::Continue) {
+                        for paragraph in &cell.paragraphs {
+                            paragraphs[*paragraph].edit_block =
+                                Some("продолжение объединённой ячейки");
+                        }
+                    }
+                }
+            }
+        }
         let footer_source = relationship(&package, &rel_path, &main, "footer")?
             .map(|p| package.text(&p))
             .transpose()?;
@@ -752,7 +843,7 @@ impl Document {
             .map_err(|e| e.to_string())?;
         let footer = footer_xml
             .as_ref()
-            .map(|xml| read_paragraphs(xml, &styles, numbering.as_ref(), &mut warnings))
+            .map(|xml| read_paragraphs(xml, &styles, numbering.as_ref(), &mut warnings, None))
             .transpose()?
             .unwrap_or_default();
         let settings_source = relationship(&package, &rel_path, &main, "settings")?
@@ -813,6 +904,7 @@ impl Document {
         };
         Ok(Self {
             compress_justification,
+            content,
             package,
             paragraphs,
             footer,

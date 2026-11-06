@@ -4,13 +4,21 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::{HSTRING, Interface, Result, w};
+mod blocks;
+mod inline;
 mod input;
 pub use input::Caret;
+
+pub fn picture_dimensions(bytes: &[u8]) -> Result<[u32; 2]> {
+    blocks::picture_dimensions(bytes)
+}
 
 #[derive(Clone)]
 pub struct TextLayout {
     pub native: IDWriteTextLayout,
     pub colors: std::sync::Arc<Vec<(DWRITE_TEXT_RANGE, [u8; 3])>>,
+    inline: std::sync::Arc<Vec<inline::Item>>,
+    line_spacing: (f32, f32, bool),
 }
 impl std::ops::Deref for TextLayout {
     type Target = IDWriteTextLayout;
@@ -19,12 +27,21 @@ impl std::ops::Deref for TextLayout {
     }
 }
 
+impl TextLayout {
+    pub fn has_inline(&self) -> bool {
+        !self.inline.is_empty()
+    }
+}
+
 #[derive(Clone)]
 pub struct Line {
     pub layout: TextLayout,
+    pub clip: Option<[f32; 4]>,
     pub x: f32,
     pub y: f32,
     pub source_y: f32,
+    pub draw_offset: f32,
+    pub native_height: f32,
     pub width: f32,
     pub height: f32,
     pub text_start: u32,
@@ -34,7 +51,10 @@ pub struct Line {
     pub layout_text_start: u32,
     pub layout_length: u32,
 }
+#[derive(Default)]
 pub struct PageLayout {
+    pub cells: Vec<blocks::CellLayout>,
+    pub images: Vec<blocks::ImageLayout>,
     pub lines: Vec<Line>,
     pub footer: Vec<Line>,
 }
@@ -307,6 +327,7 @@ fn shaped(
             }
             position = end;
         }
+        let inline = inline::attach(&layout, paragraph, start, prefix, text.len() as u32)?;
         let natural = metrics(&layout)?;
         let max_points = paragraph
             .runs
@@ -329,11 +350,10 @@ fn shaped(
                 LineSpacing::Multiple(_) => 0.0,
                 _ => (height - natural_height).max(0.0) / 2.0,
             };
-        layout.SetLineSpacing(
-            DWRITE_LINE_SPACING_METHOD_UNIFORM,
-            height,
-            baseline.min(height),
-        )?;
+        let baseline = baseline.min(height);
+        if inline.is_empty() {
+            layout.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, height, baseline)?;
+        }
         layout.SetTextAlignment(match paragraph.style.alignment {
             Alignment::Left => DWRITE_TEXT_ALIGNMENT_LEADING,
             Alignment::Center => DWRITE_TEXT_ALIGNMENT_CENTER,
@@ -343,6 +363,12 @@ fn shaped(
         Ok(TextLayout {
             native: layout,
             colors: std::sync::Arc::new(colors),
+            inline: std::sync::Arc::new(inline),
+            line_spacing: (
+                height,
+                baseline,
+                matches!(paragraph.style.line, LineSpacing::Exact(_)),
+            ),
         })
     }
 }
@@ -419,6 +445,12 @@ fn prepare(
     }
     let width = (width - paragraph.style.left - paragraph.style.right).max(1.0);
     let first_width = (width - paragraph.style.first_line).max(1.0);
+    if paragraph
+        .inline_pictures()
+        .any(|(_, _, pic)| pic.width > width.max(first_width) + 0.01)
+    {
+        return Err(blocks::error("Рисунок шире строки или ячейки"));
+    }
     if paragraph.style.alignment == Alignment::Justify {
         return justified(
             factory,
@@ -441,19 +473,23 @@ fn prepare(
     let first_metrics = metrics(&first)?;
     let mut lines = Vec::new();
     if let Some(line) = first_metrics.first() {
+        let (height, baseline, draw_offset) = inline::line_box(&first, line, 0)?;
         lines.push(Line {
             layout: first.clone(),
+            clip: None,
             x: paragraph.style.left + paragraph.style.first_line,
             y: 0.0,
             source_y: 0.0,
+            draw_offset,
+            native_height: line.height,
             width: first_width,
-            height: line.height,
+            height,
             text_start: 0,
             text_length: line
                 .length
                 .saturating_sub(prefix.encode_utf16().count() as u32),
             paragraph: paragraph_index,
-            baseline: line.baseline,
+            baseline,
             layout_text_start: 0,
             layout_length: line.length,
         });
@@ -471,17 +507,22 @@ fn prepare(
             let mut y = 0.0;
             let mut position = first_length as u32;
             for metric in metrics(&rest)? {
+                let (height, baseline, draw_offset) =
+                    inline::line_box(&rest, &metric, position - first_length as u32)?;
                 lines.push(Line {
                     layout: rest.clone(),
+                    clip: None,
                     x: paragraph.style.left,
                     y: 0.0,
                     source_y: y,
+                    draw_offset,
+                    native_height: metric.height,
                     width,
-                    height: metric.height,
+                    height,
                     text_start: position.saturating_sub(prefix.encode_utf16().count() as u32),
                     text_length: metric.length,
                     paragraph: paragraph_index,
-                    baseline: metric.baseline,
+                    baseline,
                     layout_text_start: position - first_length as u32,
                     layout_length: metric.length,
                 });
@@ -643,8 +684,10 @@ fn justified(
             }
         }
         let metric = metrics(&layout)?[0];
+        let (height, baseline, draw_offset) = inline::line_box(&layout, &metric, 0)?;
         lines.push(Line {
             layout,
+            clip: None,
             x: paragraph.style.left
                 + if begin == 0 {
                     paragraph.style.first_line
@@ -653,13 +696,15 @@ fn justified(
                 },
             y: 0.0,
             source_y: 0.0,
+            draw_offset,
+            native_height: metric.height,
             width,
-            height: metric.height,
+            height,
             text_start: (start as u32).saturating_sub(prefix),
             text_length: (stop as u32).saturating_sub(prefix)
                 - (start as u32).saturating_sub(prefix),
             paragraph: paragraph_index,
-            baseline: metric.baseline,
+            baseline,
             layout_text_start: 0,
             layout_length: (stop - start) as u32,
         });
@@ -725,6 +770,11 @@ pub fn build_cancelled(
         }
     }
     let content_width = document.page.width - document.page.left - document.page.right;
+    if document.content.is_some() {
+        let mut layout = blocks::build(factory, document, cancelled, missing_fonts)?;
+        inline::place(&mut layout.pages, document, cancelled)?;
+        return Ok(layout);
+    }
     let paragraphs_prepared: Vec<_> = document
         .paragraphs
         .iter()
@@ -744,8 +794,7 @@ pub fn build_cancelled(
         })
         .collect::<Result<_>>()?;
     let mut pages = vec![PageLayout {
-        lines: Vec::new(),
-        footer: Vec::new(),
+        ..Default::default()
     }];
     let top = document.page.top;
     let bottom = document.page.height - document.page.bottom;
@@ -777,8 +826,7 @@ pub fn build_cancelled(
                     && height + next_height <= bottom - top))
         {
             pages.push(PageLayout {
-                lines: Vec::new(),
-                footer: Vec::new(),
+                ..Default::default()
             });
             y = top;
             before = 0.0;
@@ -809,8 +857,7 @@ pub fn build_cancelled(
                     count = 1;
                 } else {
                     pages.push(PageLayout {
-                        lines: Vec::new(),
-                        footer: Vec::new(),
+                        ..Default::default()
                     });
                     y = top;
                     continue;
@@ -826,8 +873,7 @@ pub fn build_cancelled(
             remaining = &remaining[count..];
             if !remaining.is_empty() {
                 pages.push(PageLayout {
-                    lines: Vec::new(),
-                    footer: Vec::new(),
+                    ..Default::default()
                 });
                 y = top;
             }
@@ -839,6 +885,20 @@ pub fn build_cancelled(
         }
         previous_after = prepared.after;
     }
+    add_footers(factory, document, &mut pages)?;
+    inline::place(&mut pages, document, cancelled)?;
+    Ok(Layout {
+        pages,
+        missing_fonts,
+    })
+}
+
+fn add_footers(
+    factory: &IDWriteFactory,
+    document: &Document,
+    pages: &mut [PageLayout],
+) -> Result<()> {
+    let content_width = document.page.width - document.page.left - document.page.right;
     for (index, page) in pages.iter_mut().enumerate() {
         if index == 0 && document.page.different_first {
             continue;
@@ -875,10 +935,7 @@ pub fn build_cancelled(
             page.footer.push(line);
         }
     }
-    Ok(Layout {
-        pages,
-        missing_fonts,
-    })
+    Ok(())
 }
 
 #[cfg(test)]
@@ -915,6 +972,7 @@ mod tests {
         Paragraph {
             runs: vec![Run {
                 text: text.into(),
+                picture: None,
                 font: font.clone(),
                 source: None,
             }],

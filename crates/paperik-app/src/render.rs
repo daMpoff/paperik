@@ -39,6 +39,8 @@ pub struct View<'a> {
     pub dirty: bool,
     pub autosave_status: &'a str,
     pub recovery_enabled: bool,
+    pub chat_active: bool,
+    pub ollama_status: &'a str,
 }
 
 pub fn panes(width: f32, height: f32) -> (f32, f32, f32, f32) {
@@ -61,7 +63,7 @@ pub fn max_scroll(view: &View<'_>) -> f32 {
         _ => 0.0,
     }
 }
-fn rgb(name: &str) -> [u8; 3] {
+pub(crate) fn rgb(name: &str) -> [u8; 3] {
     let marker = format!("\"{name}\"");
     let value = TOKENS
         .split_once(&marker)
@@ -94,13 +96,79 @@ pub fn draw_page(target: &ID2D1RenderTarget, page: &layout::PageLayout, width: f
     // The screen and diagnostic PNGs share this exact drawing path.
     unsafe {
         let black = target.CreateSolidColorBrush(&layout::color([0, 0, 0]), None)?;
+        for cell in &page.cells {
+            let [x, y, w, h] = cell.rect;
+            if let Some(fill) = cell.fill {
+                let brush = target.CreateSolidColorBrush(&layout::color(fill), None)?;
+                target.FillRectangle(&rect(x, y, w, h), &brush);
+            }
+            let edges = [
+                (x, y, x + w, y),
+                (x + w, y, x + w, y + h),
+                (x, y + h, x + w, y + h),
+                (x, y, x, y + h),
+            ];
+            for (border, (x1, y1, x2, y2)) in cell.borders.iter().zip(edges) {
+                if let Some(border) = border {
+                    let brush = target.CreateSolidColorBrush(&layout::color(border.color), None)?;
+                    target.DrawLine(
+                        Vector2 { X: x1, Y: y1 },
+                        Vector2 { X: x2, Y: y2 },
+                        &brush,
+                        border.width,
+                        None,
+                    );
+                }
+            }
+        }
+        for image in &page.images {
+            let pixels = &image.pixels;
+            let bitmap = target.CreateBitmap(
+                D2D_SIZE_U {
+                    width: pixels.width,
+                    height: pixels.height,
+                },
+                Some(pixels.bytes.as_ptr().cast()),
+                pixels.width * 4,
+                &D2D1_BITMAP_PROPERTIES {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                },
+            )?;
+            let [x, y, w, h] = image.rect;
+            target.DrawBitmap(
+                &bitmap,
+                Some(&rect(x, y, w, h)),
+                1.0,
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                None,
+            );
+        }
         for line in page.lines.iter().chain(page.footer.iter()) {
             // Italic overhangs may extend beyond the text column; the page is
             // the horizontal clipping boundary, not the nominal advance box.
-            target.PushAxisAlignedClip(
-                &rect(0.0, line.y, width, line.height),
-                D2D1_ANTIALIAS_MODE_ALIASED,
-            );
+            let mut clip = if let Some([x, y, w, h]) = line.clip {
+                rect(x, y, w, h)
+            } else {
+                rect(0.0, line.y, width, line.height)
+            };
+            if line.layout.has_inline() {
+                // DrawTextLayout paints every native line. Clip to this line after moving its baseline.
+                let top = line.y + line.draw_offset;
+                clip.top = clip.top.max(line.y).max(top);
+                clip.bottom = clip
+                    .bottom
+                    .min(line.y + line.height)
+                    .min(top + line.native_height);
+                if clip.bottom <= clip.top {
+                    continue;
+                }
+            }
+            target.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_ALIASED);
             let start = line.layout_text_start;
             let end = start + line.layout_length;
             let colors = &line.layout.colors;
@@ -122,7 +190,7 @@ pub fn draw_page(target: &ID2D1RenderTarget, page: &layout::PageLayout, width: f
             target.DrawTextLayout(
                 Vector2 {
                     X: line.x,
-                    Y: line.y - line.source_y,
+                    Y: line.y - line.source_y + line.draw_offset,
                 },
                 &line.layout.native,
                 &black,
@@ -516,7 +584,11 @@ impl Renderer {
             },
         )?;
         self.text(
-            "Оформление из DOCX",
+            if v.document.is_some() {
+                "Таблицы и рисунки — правый щелчок"
+            } else {
+                "Оформление из DOCX"
+            },
             left + 18.0,
             116.0,
             230.0,
@@ -556,82 +628,84 @@ impl Renderer {
                 },
             )?;
             self.fill(rect(right + 20.0, 124.0, 100.0, 2.0), rgb("forest"))?;
-            self.text(
-                "ИИ пока не подключён",
-                right + 20.0,
-                150.0,
-                240.0,
-                TextStyle {
-                    size: 14.0,
-                    color: muted,
-                    bold: false,
-                },
-            )?;
-            self.text(
-                v.autosave_status,
-                right + 20.0,
-                180.0,
-                240.0,
-                TextStyle {
-                    size: 12.0,
-                    color: muted,
-                    bold: false,
-                },
-            )?;
-            if let (Some(doc), Some(layout)) = (v.document, v.layout) {
+            if !v.chat_active {
                 self.text(
-                    "Документ",
+                    &v.ollama_status.chars().take(28).collect::<String>(),
                     right + 20.0,
-                    211.0,
+                    150.0,
                     240.0,
                     TextStyle {
                         size: 14.0,
-                        color: ink,
-                        bold: true,
+                        color: muted,
+                        bold: false,
                     },
                 )?;
-                self.text(&format!("{} страниц\n{} абзацев\n\nСтраница: {:.0} × {:.0} мм\nПоля: {:.0} / {:.0} / {:.0} / {:.0} мм",layout.pages.len(),doc.paragraphs.len(),doc.page.width*25.4/96.0,doc.page.height*25.4/96.0,doc.page.left*25.4/96.0,doc.page.right*25.4/96.0,doc.page.top*25.4/96.0,doc.page.bottom*25.4/96.0), right+20.0, 246.0, 240.0, TextStyle { size: 13.0, color: muted, bold: false })?;
-                let mut warnings = doc
-                    .warnings
-                    .iter()
-                    .cloned()
-                    .chain(
-                        layout
-                            .missing_fonts
-                            .iter()
-                            .map(|f| format!("Не найден шрифт: {f}")),
-                    )
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                if let Some(saved) = doc
-                    .saved_page_count
-                    .filter(|_| !v.dirty)
-                    .filter(|saved| *saved != layout.pages.len())
-                {
-                    if !warnings.is_empty() {
-                        warnings.push_str("\n\n");
-                    }
-                    warnings.push_str(&format!("Разбиение отличается:\nPaperik — {} страниц,\nметаданные файла — {saved}.\nТочность требует проверки.",layout.pages.len()));
-                }
-                if !warnings.is_empty() {
-                    self.rounded(
-                        rect(right + 12.0, 420.0, 256.0, 116.0),
-                        rgb("warningBackground"),
-                    )?;
+                self.text(
+                    v.autosave_status,
+                    right + 20.0,
+                    180.0,
+                    240.0,
+                    TextStyle {
+                        size: 12.0,
+                        color: muted,
+                        bold: false,
+                    },
+                )?;
+                if let (Some(doc), Some(layout)) = (v.document, v.layout) {
                     self.text(
-                        &warnings,
+                        "Документ",
                         right + 20.0,
-                        430.0,
+                        211.0,
                         240.0,
                         TextStyle {
-                            size: 12.0,
-                            color: rgb("warningForeground"),
-                            bold: false,
+                            size: 14.0,
+                            color: ink,
+                            bold: true,
                         },
                     )?;
+                    self.text(&format!("{} страниц\n{} абзацев\n\nСтраница: {:.0} × {:.0} мм\nПоля: {:.0} / {:.0} / {:.0} / {:.0} мм",layout.pages.len(),doc.paragraphs.len(),doc.page.width*25.4/96.0,doc.page.height*25.4/96.0,doc.page.left*25.4/96.0,doc.page.right*25.4/96.0,doc.page.top*25.4/96.0,doc.page.bottom*25.4/96.0), right+20.0, 246.0, 240.0, TextStyle { size: 13.0, color: muted, bold: false })?;
+                    let mut warnings = doc
+                        .warnings
+                        .iter()
+                        .cloned()
+                        .chain(
+                            layout
+                                .missing_fonts
+                                .iter()
+                                .map(|f| format!("Не найден шрифт: {f}")),
+                        )
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    if let Some(saved) = doc
+                        .saved_page_count
+                        .filter(|_| !v.dirty)
+                        .filter(|saved| *saved != layout.pages.len())
+                    {
+                        if !warnings.is_empty() {
+                            warnings.push_str("\n\n");
+                        }
+                        warnings.push_str(&format!("Разбиение отличается:\nPaperik — {} страниц,\nметаданные файла — {saved}.\nТочность требует проверки.",layout.pages.len()));
+                    }
+                    if !warnings.is_empty() {
+                        self.rounded(
+                            rect(right + 12.0, 420.0, 256.0, 116.0),
+                            rgb("warningBackground"),
+                        )?;
+                        self.text(
+                            &warnings,
+                            right + 20.0,
+                            430.0,
+                            240.0,
+                            TextStyle {
+                                size: 12.0,
+                                color: rgb("warningForeground"),
+                                bold: false,
+                            },
+                        )?;
+                    }
                 }
+                self.text("Ctrl+S — сохранить новую копию\nCtrl+Z / Ctrl+Y — отмена / повтор\nCtrl+C / X / V — буфер обмена\nShift+стрелки — выделение\nCtrl+колесо — масштаб\nCtrl+O — открыть", right+20.0, bottom-150.0, 240.0, TextStyle { size: 12.0, color: muted, bold: false })?;
             }
-            self.text("Ctrl+S — сохранить новую копию\nCtrl+Z / Ctrl+Y — отмена / повтор\nCtrl+C / X / V — буфер обмена\nShift+стрелки — выделение\nCtrl+колесо — масштаб\nCtrl+O — открыть", right+20.0, bottom-150.0, 240.0, TextStyle { size: 12.0, color: muted, bold: false })?;
         }
         // Clip both pages and document text to the central workspace.
         unsafe {
@@ -672,6 +746,25 @@ impl Renderer {
                     }
                 }
                 draw_page(&self.target, page, doc.page.width)?;
+                if let Some(selection) = v.selection.filter(|selection| selection.collapsed())
+                    && let Some(image) = page.images.iter().find(|p| {
+                        p.paragraph == selection.focus.paragraph
+                            && p.offset.unwrap_or(0) == selection.focus.offset
+                    })
+                {
+                    let [x, y, width, height] = image.rect;
+                    unsafe {
+                        let brush = self
+                            .target
+                            .CreateSolidColorBrush(&layout::color(rgb("forest")), None)?;
+                        self.target.DrawRectangle(
+                            &rect(x, y, width, height),
+                            &brush,
+                            1.5 / v.zoom,
+                            None,
+                        );
+                    }
+                }
                 unsafe {
                     self.target.SetTransform(&matrix(1.0, 0.0, 0.0));
                 }

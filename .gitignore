@@ -46,3 +46,5 @@ Desktop.ini
 # Обезличенные макеты для README
 !/assets/readme/interface-light.png
 !/assets/readme/interface-dark.png
+
+!/tests/fixtures/blocks.docx

@@ -1,5 +1,9 @@
 //! Surgical OOXML export. Unchanged XML/parts are retained, never reserialized wholesale.
+mod blocks;
+mod picture;
+mod table;
 use crate::{Document, Node, Paragraph, Run, W, WS, attr, child, is, parse_xml, relationship};
+pub use picture::{PictureAction, PictureEdit};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
@@ -7,9 +11,13 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
+pub use table::{TableAction, TableEdit};
 const MAX_XML: usize = 16 * 1024 * 1024;
 
 pub(crate) fn edit_block(paragraph: Node<'_, '_>) -> Option<&'static str> {
+    if crate::blocks::standalone(paragraph) {
+        return Some("отдельный рисунок");
+    }
     if paragraph.children().any(|n| {
         n.is_comment()
             || (n.is_text() && !n.text().unwrap_or("").trim().is_empty())
@@ -38,6 +46,7 @@ pub(crate) fn edit_block(paragraph: Node<'_, '_>) -> Option<&'static str> {
                         "cr",
                         "noBreakHyphen",
                         "lastRenderedPageBreak",
+                        "drawing",
                     ]
                     .iter()
                     .any(|tag| is(n, tag)))
@@ -54,7 +63,7 @@ pub(crate) fn edit_block(paragraph: Node<'_, '_>) -> Option<&'static str> {
         }
         if run
             .children()
-            .filter(|n| n.is_element() && !is(*n, "rPr"))
+            .filter(|n| n.is_element() && !is(*n, "rPr") && !is(*n, "drawing"))
             .any(|n| {
                 n.children().any(|c| c.is_element() || c.is_comment())
                     || n.attributes().any(|a| {
@@ -72,7 +81,7 @@ pub(crate) fn edit_block(paragraph: Node<'_, '_>) -> Option<&'static str> {
         }
         if !run.children().any(|n| {
             (is(n, "t") && !n.text().unwrap_or("").is_empty())
-                || ["tab", "br", "cr", "noBreakHyphen"]
+                || ["tab", "br", "cr", "noBreakHyphen", "drawing"]
                     .iter()
                     .any(|tag| is(n, tag))
         }) {
@@ -156,15 +165,17 @@ fn same_source_paragraph(a: &Paragraph, b: &Paragraph) -> bool {
     a.source == b.source && a.runs == b.runs && same_paragraph(a, b)
 }
 fn same_runs(a: &[Run], b: &[Run]) -> bool {
-    fn normalized(runs: &[Run]) -> Vec<(String, crate::Font)> {
-        let mut result: Vec<(String, crate::Font)> = Vec::new();
+    fn normalized(runs: &[Run]) -> Vec<(String, &crate::Font, Option<&crate::InlineRaster>)> {
+        let mut result: Vec<(String, &crate::Font, Option<&crate::InlineRaster>)> = Vec::new();
         for run in runs.iter().filter(|r| !r.text.is_empty()) {
             if let Some(last) = result.last_mut()
-                && last.1 == run.font
+                && *last.1 == run.font
+                && last.2.is_none()
+                && run.picture.is_none()
             {
                 last.0.push_str(&run.text);
             } else {
-                result.push((run.text.clone(), run.font.clone()));
+                result.push((run.text.clone(), &run.font, run.picture.as_ref()));
             }
         }
         result
@@ -172,7 +183,8 @@ fn same_runs(a: &[Run], b: &[Run]) -> bool {
     normalized(a) == normalized(b)
 }
 fn same_document(a: &Document, b: &Document) -> bool {
-    a.page == b.page
+    a.content == b.content
+        && a.page == b.page
         && a.tab_stop == b.tab_stop
         && a.compress_justification == b.compress_justification
         && a.paragraphs.len() == b.paragraphs.len()
@@ -303,6 +315,30 @@ fn paragraph_xml(
             if original_run.font != run.font {
                 return Err("Изменение шрифта пока не поддерживается экспортом".into());
             }
+            if let Some(picture) = &run.picture {
+                if original_run.picture.as_ref() != Some(picture)
+                    || r < crate::blocks::DRAWING_SOURCE
+                {
+                    return Err("Не найдена исходная разметка рисунка".into());
+                }
+                let drawing = crate::blocks::drawings(paragraphs[p])
+                    .nth(r - crate::blocks::DRAWING_SOURCE)
+                    .ok_or("Не найден исходный узел рисунка")?;
+                let source_run = drawing
+                    .parent()
+                    .filter(|n| is(*n, "r"))
+                    .ok_or("Не найден фрагмент рисунка")?;
+                let (mut xml, rp) = wrapper(source_run, "r", false);
+                if let Some(props) = child(source_run, "rPr") {
+                    xml.push_str(raw(source, props));
+                }
+                // A picture-only edited paragraph remains part of the text flow.
+                xml.push_str(&format!("<{rp}:t/>"));
+                xml.push_str(raw(source, drawing));
+                xml.push_str(&format!("</{rp}:r>"));
+                result.push_str(&xml);
+                continue;
+            }
             let source_run = paragraphs[p]
                 .descendants()
                 .filter(|n| is(*n, "r"))
@@ -341,7 +377,14 @@ fn paragraph_xml(
 }
 impl Document {
     pub fn to_docx(&self, page_count: Option<usize>) -> Result<Vec<u8>, String> {
-        let baseline = Document::from_bytes(self.package.original.to_vec())?;
+        let modified = self.prepared_xml()?;
+        if modified.is_none() && self.package.main.is_none() {
+            return Ok(self.package.original.to_vec());
+        }
+        self.finish_export(modified, page_count)
+    }
+    fn prepared_xml(&self) -> Result<Option<(String, String)>, String> {
+        let baseline = Document::from_package(self.package.clone())?;
         if same_document(self, &baseline)
             && self
                 .paragraphs
@@ -349,7 +392,10 @@ impl Document {
                 .zip(&baseline.paragraphs)
                 .all(|(a, b)| same_source_paragraph(a, b))
         {
-            return Ok(self.package.original.to_vec());
+            return Ok(None);
+        }
+        if self.content.is_some() != baseline.content.is_some() {
+            return Err("Структура блоков не совпадает с исходным документом".into());
         }
         if self
             .package
@@ -376,6 +422,10 @@ impl Document {
             .ok_or("Не найдена основная часть DOCX")?;
         let source = self.package.text(&main)?;
         let xml = parse_xml(&source).map_err(|e| e.to_string())?;
+        if baseline.content.is_some() {
+            let output = blocks::rewrite(self, &baseline, &source, &xml)?;
+            return Ok(Some((main, output)));
+        }
         let body = xml
             .descendants()
             .find(|n| is(*n, "body"))
@@ -451,7 +501,17 @@ impl Document {
         if output.len() > MAX_XML {
             return Err("XML документа превышает 16 МиБ".into());
         }
-        let mut changes = BTreeMap::from([(main, output.into_bytes())]);
+        Ok(Some((main, output)))
+    }
+    fn finish_export(
+        &self,
+        modified: Option<(String, String)>,
+        page_count: Option<usize>,
+    ) -> Result<Vec<u8>, String> {
+        let mut changes: BTreeMap<_, _> = modified
+            .into_iter()
+            .map(|(name, xml)| (name, xml.into_bytes()))
+            .collect();
         if let Some(count) = page_count.filter(|count| *count > 0 && *count <= 100000)
             && self.package.contains("docProps/app.xml")
         {

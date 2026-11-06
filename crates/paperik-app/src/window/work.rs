@@ -81,6 +81,7 @@ impl State {
         Ok(())
     }
     pub(super) fn load(&mut self, path: PathBuf) -> Result<(), String> {
+        self.open_error_notice = None;
         let root = self.recovery_root.clone();
         self.start(Kind::Load, move |cancel| {
             tasks::check(cancel)?;
@@ -158,6 +159,11 @@ impl State {
             return Err("Завершение работы: дождитесь текущей операции".into());
         }
         if self.busy() {
+            if matches!(edit, Edit::Table(_) | Edit::Picture(_)) {
+                return Err(
+                    "Дождитесь завершения текущей операции, затем повторите команду".into(),
+                );
+            }
             if !matches!(self.kind, Some(Kind::Edit | Kind::Save)) {
                 return Err("Дождитесь открытия документа или отмените его клавишей Esc".into());
             }
@@ -176,11 +182,22 @@ impl State {
             self.edits.push_back(edit);
             return Ok(());
         }
+        self.apply_with(move |_| Ok(edit))
+    }
+    pub(super) fn apply_with(
+        &mut self,
+        make_edit: impl FnOnce(&Document) -> Result<Edit, String> + Send + 'static,
+    ) -> Result<(), String> {
+        if self.closing || self.busy() || self.after.is_some() {
+            return Err("Дождитесь завершения текущей операции".into());
+        }
         let Some(mut editor) = self.editor.clone() else {
             return Ok(());
         };
         let base_stamp = editor.checkpoint_stamp();
         self.start(Kind::Edit, move |cancel| {
+            tasks::check(cancel)?;
+            let edit = make_edit(editor.document())?;
             tasks::check(cancel)?;
             let layout = if let Some(change) = editor.prepare(edit)? {
                 let factory: IDWriteFactory =
@@ -221,6 +238,9 @@ impl State {
         }
         match done.result {
             Err(error) => {
+                if matches!(kind, Some(Kind::Load | Kind::Restore)) {
+                    self.open_error_notice = Some(error.clone());
+                }
                 self.operation_error = Some(error.clone());
                 self.after = None;
                 if kind == Some(Kind::Edit) {
@@ -242,6 +262,7 @@ impl State {
                 self.zoom = render::fit_zoom(self.width, self.height, value.editor.document());
                 self.scroll = 0.0;
                 self.confirmed_stamp = value.restored.then(|| value.editor.checkpoint_stamp());
+                self.caret_page = None;
                 self.editor = Some(value.editor);
                 self.layout = Some(value.layout);
                 self.filename = value.filename;
@@ -357,6 +378,41 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_open_retains_document_and_queues_a_visible_error_notice() {
+        let original = Editor::new(
+            Document::from_bytes(
+                include_bytes!("../../../../tests/fixtures/formatting.docx").to_vec(),
+            )
+            .unwrap(),
+        );
+        let paragraphs = original.document().paragraphs.clone();
+        let mut state = State::empty(96.0);
+        state.editor = Some(original);
+        state.filename = "kept.docx".into();
+        state
+            .start(Kind::Load, |_| {
+                Err("Синтетическая ошибка чтения DOCX".into())
+            })
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while state.busy() {
+            assert!(std::time::Instant::now() < deadline);
+            state.poll_work();
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            state.open_error_notice.as_deref(),
+            Some("Синтетическая ошибка чтения DOCX")
+        );
+        assert_eq!(state.operation_error, state.open_error_notice);
+        assert_eq!(state.filename, "kept.docx");
+        assert_eq!(
+            state.editor.as_ref().unwrap().document().paragraphs,
+            paragraphs
+        );
+        assert!(!state.editor.as_ref().unwrap().dirty());
+    }
     #[test]
     fn stale_layout_cannot_replace_a_newer_editor_state() {
         let original = Editor::new(

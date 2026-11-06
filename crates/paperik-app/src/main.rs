@@ -1,11 +1,15 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[cfg(target_os = "windows")]
+mod chat_ui;
+#[cfg(target_os = "windows")]
 mod clipboard;
 #[cfg(target_os = "windows")]
 mod export;
 #[cfg(target_os = "windows")]
 mod layout;
+#[cfg(target_os = "windows")]
+mod ollama;
 #[cfg(target_os = "windows")]
 mod recovery;
 #[cfg(target_os = "windows")]

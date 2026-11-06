@@ -21,7 +21,12 @@ use windows_sys::Win32::{
 };
 
 #[cfg(test)]
+mod block_tests;
+mod chat;
+#[cfg(test)]
 mod perf;
+mod picture;
+mod table;
 mod work;
 use work::{Action, Kind, ScanResult};
 
@@ -29,6 +34,9 @@ const CLASS: *const u16 = windows_sys::w!("Paperik.MainWindow");
 const TITLE: *const u16 = windows_sys::w!("Paperik");
 
 struct State {
+    chat: Option<crate::chat_ui::Panel>,
+    chat_show: bool,
+    ollama_status: String,
     work: Option<crate::tasks::Background<work::Outcome>>,
     kind: Option<Kind>,
     edits: std::collections::VecDeque<Edit>,
@@ -43,6 +51,7 @@ struct State {
     file_path: Option<PathBuf>,
     message: String,
     operation_error: Option<String>,
+    open_error_notice: Option<String>,
     width: f32,
     height: f32,
     dpi: f32,
@@ -59,6 +68,7 @@ struct State {
     dragging: bool,
     drag_point: (f32, f32),
     upstream: bool,
+    caret_page: Option<usize>,
     preferred_x: Option<f32>,
     input: crate::text_input::Utf16Input,
     composing: bool,
@@ -75,6 +85,9 @@ impl Drop for State {
 impl State {
     fn empty(dpi: f32) -> Self {
         Self {
+            chat: None,
+            chat_show: false,
+            ollama_status: "Ollama не подключена".into(),
             work: None,
             kind: None,
             edits: Default::default(),
@@ -89,6 +102,7 @@ impl State {
             file_path: None,
             message: String::new(),
             operation_error: None,
+            open_error_notice: None,
             width: 1320.0,
             height: 820.0,
             dpi,
@@ -105,6 +119,7 @@ impl State {
             dragging: false,
             drag_point: (0.0, 0.0),
             upstream: false,
+            caret_page: None,
             preferred_x: None,
             input: crate::text_input::Utf16Input::default(),
             composing: false,
@@ -125,6 +140,8 @@ impl State {
             dirty: self.editor.as_ref().is_some_and(Editor::dirty),
             autosave_status: self.autosave_status,
             recovery_enabled: self.recovery_root.is_some(),
+            chat_active: self.chat_show,
+            ollama_status: &self.ollama_status,
         }
     }
     fn clamp(&mut self) {
@@ -200,42 +217,90 @@ impl State {
         let editor = self.editor.as_ref()?;
         self.layout
             .as_ref()?
-            .caret(editor.document(), editor.selection().focus, self.upstream)
-            .ok()
-            .flatten()
-    }
-    fn hit(&self, x: f32, y: f32) -> Option<(Position, bool)> {
-        let editor = self.editor.as_ref()?;
-        let doc = editor.document();
-        let layout = self.layout.as_ref()?;
-        let (left, right, top, _) = render::panes(self.width, self.height);
-        let page_x = left + (right - left - doc.page.width * self.zoom) / 2.0;
-        let absolute_y = (y - top) / self.zoom + self.scroll - 24.0;
-        let index = (absolute_y.max(0.0) / (doc.page.height + 24.0)).floor() as usize;
-        let index = index.min(layout.pages.len().saturating_sub(1));
-        layout
-            .hit_test(
-                doc,
-                index,
-                (x - page_x) / self.zoom,
-                absolute_y - index as f32 * (doc.page.height + 24.0),
+            .caret_on_page(
+                editor.document(),
+                editor.selection().focus,
+                self.upstream,
+                self.caret_page.or(Some(0)),
             )
             .ok()
             .flatten()
     }
-    fn reveal(&mut self) {
-        if let (Some(caret), Some(editor)) = (self.caret(), self.editor.as_ref()) {
-            let (_, _, top, bottom) = render::panes(self.width, self.height);
-            let y = 24.0 + caret.page as f32 * (editor.document().page.height + 24.0) + caret.y;
-            let visible = (bottom - top) / self.zoom;
-            if y < self.scroll + 12.0 {
-                self.scroll = (y - 12.0).max(0.0);
-            }
-            if y + caret.height > self.scroll + visible - 12.0 {
-                self.scroll = y + caret.height - visible + 12.0;
-            }
-            self.clamp();
+    fn page_point(&self, x: f32, y: f32) -> Option<(usize, f32, f32)> {
+        let doc = self.editor.as_ref()?.document();
+        let layout = self.layout.as_ref()?;
+        let (left, right, top, _) = render::panes(self.width, self.height);
+        let page_x = left + (right - left - doc.page.width * self.zoom) / 2.0;
+        let absolute_y = (y - top) / self.zoom + self.scroll - 24.0;
+        let stride = doc.page.height + 24.0;
+        let page = ((absolute_y.max(0.0) / stride).floor() as usize)
+            .min(layout.pages.len().saturating_sub(1));
+        Some((
+            page,
+            (x - page_x) / self.zoom,
+            absolute_y - page as f32 * stride,
+        ))
+    }
+    fn hit(&self, x: f32, y: f32) -> Option<(Position, bool, usize)> {
+        let (page, x, y) = self.page_point(x, y)?;
+        let layout = self.layout.as_ref()?;
+        if let Some(image) = layout
+            .pages
+            .get(page)?
+            .images
+            .iter()
+            .find(|image| image.offset.is_none() && image.contains(x, y))
+        {
+            return Some((
+                Position {
+                    paragraph: image.paragraph,
+                    offset: 0,
+                },
+                false,
+                page,
+            ));
         }
+        layout
+            .hit_test(self.editor.as_ref()?.document(), page, x, y)
+            .ok()
+            .flatten()
+            .map(|(position, upstream)| (position, upstream, page))
+    }
+    fn reveal(&mut self) {
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        let (page, y, height) = if let Some(caret) = self.caret() {
+            (caret.page, caret.y, caret.height)
+        } else {
+            let paragraph = editor.selection().focus.paragraph;
+            let Some((page, y, height)) = self
+                .layout
+                .iter()
+                .flat_map(|layout| layout.pages.iter().enumerate())
+                .find_map(|(page, layout)| {
+                    layout
+                        .images
+                        .iter()
+                        .find(|image| image.paragraph == paragraph)
+                        .map(|image| (page, image.rect[1], image.rect[3]))
+                })
+            else {
+                return;
+            };
+            (page, y, height)
+        };
+        let (_, _, top, bottom) = render::panes(self.width, self.height);
+        let y = 24.0 + page as f32 * (editor.document().page.height + 24.0) + y;
+        let visible = (bottom - top) / self.zoom;
+        let height = height.min((visible - 24.0).max(0.0));
+        if y < self.scroll + 12.0 {
+            self.scroll = (y - 12.0).max(0.0);
+        }
+        if y + height > self.scroll + visible - 12.0 {
+            self.scroll = y + height - visible + 12.0;
+        }
+        self.clamp();
     }
     fn move_vertical(&mut self, steps: isize, extend: bool) {
         let Some(caret) = self.caret() else {
@@ -243,16 +308,18 @@ impl State {
         };
         let x = *self.preferred_x.get_or_insert(caret.x);
         if let (Some(editor), Some(layout)) = (&mut self.editor, &self.layout)
-            && let Ok(Some((position, upstream))) = layout.vertical(
+            && let Ok(Some((position, upstream, page))) = layout.vertical(
                 editor.document(),
                 editor.selection().focus,
                 self.upstream,
                 x,
                 steps,
+                self.caret_page.or(Some(caret.page)),
             )
         {
             editor.set_position(position, extend);
             self.upstream = upstream;
+            self.caret_page = Some(page);
         }
         self.reveal();
     }
@@ -271,12 +338,20 @@ impl State {
                         editor.selection().focus,
                         self.upstream,
                         right,
+                        self.caret_page,
                     )
                     .ok()
                     .flatten()
             };
             if let Some(position) = position {
                 editor.set_position(position, extend);
+            }
+            if whole {
+                self.caret_page = Some(if right {
+                    layout.pages.len().saturating_sub(1)
+                } else {
+                    0
+                });
             }
             self.upstream = right;
             self.preferred_x = None;
@@ -389,7 +464,7 @@ pub fn run(smoke_test: bool, path: Option<PathBuf>) -> Result<(), String> {
             0,
             CLASS,
             TITLE,
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             bounds.right - bounds.left,
@@ -414,6 +489,16 @@ pub fn run(smoke_test: bool, path: Option<PathBuf>) -> Result<(), String> {
             Renderer::new(handle, client.right as u32, client.bottom as u32, dpi)
                 .map_err(|e| e.to_string())?,
         );
+        if !smoke_test {
+            match crate::chat_ui::Panel::new(handle, dpi) {
+                Ok(panel) => {
+                    state.chat_show = true;
+                    state.chat = Some(panel);
+                }
+                Err(error) => state.ollama_status = error,
+            }
+            chat::update(handle, None, false);
+        }
         SetTimer(handle, 3, 16, None);
         if let Some(path) = path {
             state.load(path)?;
@@ -455,6 +540,7 @@ pub fn run(smoke_test: bool, path: Option<PathBuf>) -> Result<(), String> {
         } else {
             ShowWindow(handle, SW_SHOW);
             UpdateWindow(handle);
+            chat::update(handle, Some(crate::chat_ui::REFRESH), false);
             SetTimer(handle, 2, 500, None);
             restore_session(handle, true);
         }
@@ -464,8 +550,10 @@ pub fn run(smoke_test: bool, path: Option<PathBuf>) -> Result<(), String> {
                 -1 => return Err(last_error()),
                 0 => break,
                 _ => {
-                    TranslateMessage(&message);
-                    DispatchMessageW(&message);
+                    if !chat::pretranslate(handle, &message) {
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
                 }
             }
         }
@@ -479,11 +567,18 @@ unsafe fn state_pointer(window: HWND) -> *mut State {
 }
 
 fn open_dialog(window: HWND) -> Option<PathBuf> {
+    open_file_dialog(
+        window,
+        windows_sys::w!("Документы Word (*.docx)\0*.docx\0\0"),
+    )
+}
+
+fn open_file_dialog(window: HWND, filter: *const u16) -> Option<PathBuf> {
     let mut buffer = vec![0_u16; 32768];
     let mut dialog = OPENFILENAMEW {
         lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: window,
-        lpstrFilter: windows_sys::w!("Документы Word (*.docx)\0*.docx\0\0"),
+        lpstrFilter: filter,
         lpstrFile: buffer.as_mut_ptr(),
         nMaxFile: buffer.len() as u32,
         Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR,
@@ -577,12 +672,25 @@ unsafe fn poll_background(window: HWND) {
         if pointer.is_null() {
             return;
         }
+        chat::update(window, None, true);
         let (changed, candidate) = (&mut *pointer).poll_work();
         let pending_cleanup = (&*pointer).retired.len();
         (&mut *pointer).poll_retired();
         let changed = changed || pending_cleanup != (&*pointer).retired.len();
         if let Some(candidate) = candidate {
             show_recovered(window, candidate);
+        }
+        if IsWindowVisible(window) != 0
+            && let Some(error) = (&mut *pointer).open_error_notice.take()
+        {
+            refresh(window, false);
+            let text:Vec<u16>=format!("{error}\n\nИсходный файл не изменён. Если другой документ был открыт, он остался в редакторе.").encode_utf16().chain(Some(0)).collect();
+            MessageBoxW(
+                window,
+                text.as_ptr(),
+                windows_sys::w!("Paperik — документ не открыт"),
+                MB_OK | MB_ICONERROR,
+            );
         }
         if (&*pointer).closing {
             if (&*pointer).retired.is_empty() {
@@ -924,11 +1032,12 @@ unsafe fn drag(window: HWND) {
             state.scroll += ((y - bottom) * 0.3).clamp(4.0, 48.0) / state.zoom;
         }
         state.clamp();
-        if let Some((position, upstream)) = state.hit(x, y.clamp(top, bottom)) {
+        if let Some((position, upstream, page)) = state.hit(x, y.clamp(top, bottom)) {
             if let Some(editor) = &mut state.editor {
                 editor.set_position(position, true);
             }
             state.upstream = upstream;
+            state.caret_page = Some(page);
         }
         refresh(window, false);
     }
@@ -949,6 +1058,33 @@ unsafe extern "system" fn procedure(
         }
         let pointer = state_pointer(window);
         match message {
+            WM_CONTEXTMENU if !pointer.is_null() && wparam as HWND == window => {
+                if picture::context(window, lparam, true)
+                    || table::context(window, lparam)
+                    || picture::context(window, lparam, false)
+                {
+                    0
+                } else {
+                    DefWindowProcW(window, message, wparam, lparam)
+                }
+            }
+            WM_COMMAND if !pointer.is_null() && chat::is_command(wparam) => {
+                chat::update(window, Some(wparam as u16), false);
+                0
+            }
+            WM_DRAWITEM if !pointer.is_null() && lparam != 0 => {
+                crate::chat_ui::draw_button(
+                    &*(lparam as *const windows_sys::Win32::UI::Controls::DRAWITEMSTRUCT),
+                    (&*pointer).dark,
+                );
+                1
+            }
+            WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC | WM_CTLCOLORLISTBOX if !pointer.is_null() => {
+                crate::chat_ui::control_color(
+                    wparam as windows_sys::Win32::Graphics::Gdi::HDC,
+                    (&*pointer).dark,
+                )
+            }
             WM_CLOSE => {
                 request_action(window, Action::Close);
                 0
@@ -993,6 +1129,7 @@ unsafe extern "system" fn procedure(
                 state.clamp();
                 InvalidateRect(window, null(), 0);
                 sync_caret(window);
+                chat::update(window, None, false);
                 0
             }
             WM_DPICHANGED if lparam != 0 => {
@@ -1070,7 +1207,7 @@ unsafe extern "system" fn procedure(
                 }
                 // VK_PACKET may occur before EACH surrogate of a Unicode input.
                 // Only an actual navigation/control command cancels a pending pair.
-                if ctrl
+                if (ctrl && wparam != VK_PACKET as usize)
                     || matches!(
                         wparam as u16,
                         VK_LEFT
@@ -1088,6 +1225,10 @@ unsafe extern "system" fn procedure(
                     )
                 {
                     (&mut *pointer).input.clear();
+                }
+                if ctrl && shift && wparam == b'I' as usize {
+                    picture::insert_at_caret(window);
+                    return 0;
                 }
                 if ctrl && wparam == b'O' as usize {
                     if let Some(path) = open_dialog(window) {
@@ -1294,7 +1435,7 @@ unsafe extern "system" fn procedure(
                 let (left, right, top, bottom) = render::panes(state.width, state.height);
                 if x > left && x < right && y >= top && y < bottom {
                     SetFocus(window);
-                    if let Some((position, upstream)) = (&*pointer).hit(x, y) {
+                    if let Some((position, upstream, page)) = (&*pointer).hit(x, y) {
                         let state = &mut *pointer;
                         if let Some(editor) = &mut state.editor {
                             if message == WM_LBUTTONDBLCLK {
@@ -1304,6 +1445,7 @@ unsafe extern "system" fn procedure(
                             }
                         }
                         state.upstream = upstream;
+                        state.caret_page = Some(page);
                         state.preferred_x = None;
                         state.input.clear();
                         state.dragging = message != WM_LBUTTONDBLCLK;
@@ -1440,8 +1582,20 @@ mod tests {
     use super::*;
     #[test]
     fn native_input_dispatch_edits_once_reflows_and_never_writes_source() {
+        struct Keyboard([u8; 256]);
+        impl Drop for Keyboard {
+            fn drop(&mut self) {
+                unsafe {
+                    SetKeyboardState(self.0.as_ptr());
+                }
+            }
+        }
         // Exercise our callback, not an input injector or any external window.
         unsafe {
+            let mut keyboard = Keyboard([0; 256]);
+            assert_ne!(GetKeyboardState(keyboard.0.as_mut_ptr()), 0);
+            let mut keys = [0u8; 256];
+            assert_ne!(SetKeyboardState(keys.as_ptr()), 0);
             let instance = GetModuleHandleW(null());
             let class = WNDCLASSW {
                 lpfnWndProc: Some(procedure),
@@ -1479,6 +1633,8 @@ mod tests {
             wait_background(handle).unwrap();
             let source = std::fs::read(&fixture).unwrap();
             let paragraphs = state.editor.as_ref().unwrap().document().paragraphs.clone();
+            keys[VK_CONTROL as usize] = 0x80;
+            assert_ne!(SetKeyboardState(keys.as_ptr()), 0);
             procedure(handle, WM_KEYDOWN, VK_PACKET as usize, 0);
             procedure(handle, WM_CHAR, 0xd83d, 0);
             procedure(handle, WM_KEYDOWN, VK_PACKET as usize, 0);
@@ -1489,6 +1645,8 @@ mod tests {
                     .text()
                     .starts_with('🚀')
             );
+            keys[VK_CONTROL as usize] = 0;
+            assert_ne!(SetKeyboardState(keys.as_ptr()), 0);
             procedure(handle, WM_KEYDOWN, VK_BACK as usize, 0);
             procedure(handle, WM_CHAR, 8, 0);
             wait_background(handle).unwrap();

@@ -51,18 +51,19 @@ dependencies = [
 
 [[package]]
 name = "paperik-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "paperik-document",
  "roxmltree",
  "windows",
+ "windows-core",
  "windows-numerics",
  "windows-sys",
 ]
 
 [[package]]
 name = "paperik-document"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "flate2",
  "roxmltree",
